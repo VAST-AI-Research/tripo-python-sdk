@@ -40,7 +40,7 @@ class TripoClient:
                 "API key is required. Provide it as an argument or set the TRIPO_API_KEY environment variable."
             )
 
-        if not self.api_key.satrtswith('tsk_'):
+        if not self.api_key.startswith('tsk_'):
             raise ValueError("API key must start with 'tsk_'")
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -289,6 +289,9 @@ class TripoClient:
 
             # If the task is done, return it
             if task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.BANNED, TaskStatus.EXPIRED):
+                if verbose:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    print(f"Task {task_id} {task.status} in {elapsed} seconds")
                 return task
 
             if verbose:
@@ -299,12 +302,11 @@ class TripoClient:
             # Calculate next polling interval based on estimated time remaining
             if hasattr(task, 'running_left_time') and task.running_left_time is not None:
                 # Use 80% of the estimated remaining time as the next polling interval
-                next_interval = min(next_interval, task.running_left_time * 0.8)
+                polling_interval = max(2, task.running_left_time * 0.8)
             else:
-                next_interval = next_interval * 2
-
+                polling_interval = polling_interval * 2
             # Wait before polling again
-            await asyncio.sleep(next_interval)
+            await asyncio.sleep(polling_interval)
 
     async def text_to_model(
         self,

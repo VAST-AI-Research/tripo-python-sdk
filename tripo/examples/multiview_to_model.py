@@ -41,14 +41,14 @@ async def main(front: Optional[str], back: Optional[str], left: Optional[str], r
         task = await client.wait_for_task(task_id, verbose=True)
 
         if task.status == TaskStatus.SUCCESS:
-            print(f"\nTask completed successfully!")
+            print(f"Task completed successfully!")
 
             # 创建输出目录（如果不存在）
             os.makedirs(output_dir, exist_ok=True)
 
             # 下载模型文件
             try:
-                print("\nDownloading model files...")
+                print("Downloading model files...")
                 downloaded_files = await client.download_task_models(task, output_dir)
 
                 # 打印下载的文件路径
@@ -59,7 +59,7 @@ async def main(front: Optional[str], back: Optional[str], left: Optional[str], r
             except Exception as e:
                 print(f"Failed to download models: {str(e)}")
         else:
-            print(f"\nTask failed with status: {task.status}")
+            print(f"Task failed with status: {task.status}")
 
 
 if __name__ == "__main__":
