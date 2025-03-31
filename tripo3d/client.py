@@ -320,7 +320,7 @@ class TripoClient:
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
         texture_quality: str = "standard",
-        style: Optional[str] = None,
+        style: Optional[ModelStyle] = None,
         auto_size: bool = False,
         quad: bool = False
     ) -> str:
@@ -338,7 +338,7 @@ class TripoClient:
             model_seed: The model seed.
             texture_seed: The texture seed.
             texture_quality: The texture quality.
-            style: The style.
+            style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
             quad: Whether to generate a quad model.
 
@@ -380,7 +380,7 @@ class TripoClient:
             task_data["texture_seed"] = texture_seed
 
         if style:
-            task_data["style"] = style
+            task_data["style"] = style.value
 
         return await self.create_task(task_data)
 
@@ -412,7 +412,7 @@ class TripoClient:
         texture_seed: Optional[int] = None,
         texture_quality: str = "standard",
         texture_alignment: str = "original_image",
-        style: Optional[str] = None,
+        style: Optional[ModelStyle] = None,
         auto_size: bool = False,
         orientation: str = "default",
         quad: bool = False
@@ -433,7 +433,7 @@ class TripoClient:
             texture_seed: The texture seed.
             texture_quality: The texture quality.
             texture_alignment: The texture alignment.
-            style: The style.
+            style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
             orientation: The orientation.
             quad: Whether to generate a quad model.
@@ -475,7 +475,7 @@ class TripoClient:
             task_data["texture_seed"] = texture_seed
 
         if style:
-            task_data["style"] = style
+            task_data["style"] = style.value
 
         return await self.create_task(task_data)
 
@@ -490,7 +490,6 @@ class TripoClient:
         texture_seed: Optional[int] = None,
         texture_quality: str = "standard",
         texture_alignment: str = "original_image",
-        style: Optional[str] = None,
         auto_size: bool = False,
         orientation: str = "default",
         quad: bool = False
@@ -618,7 +617,7 @@ class TripoClient:
     async def stylize_model(
         self,
         original_model_task_id: str,
-        style: str,
+        style: PostStyle,
         block_size: int = 80
     ) -> str:
         """
@@ -626,11 +625,7 @@ class TripoClient:
 
         Args:
             original_model_task_id: The task ID of the original model.
-            style: Style to apply. One of:
-                  - "lego"
-                  - "voxel"
-                  - "voronoi"
-                  - "minecraft"
+            style: Style to apply from PostStyle enum.
             block_size: Size of the blocks for stylization. Default: 80
 
         Returns:
@@ -643,7 +638,7 @@ class TripoClient:
         task_data = {
             "type": "stylize_model",
             "original_model_task_id": original_model_task_id,
-            "style": style,
+            "style": style.value,
             "block_size": block_size
         }
 
@@ -815,3 +810,102 @@ class TripoClient:
             result["pbr_model"] = await download_file(task.output.pbr_model, pbr_filename)
 
         return result
+
+    async def check_riggable(
+        self,
+        original_model_task_id: str
+    ) -> str:
+        """
+        Check if a model can be rigged.
+
+        Args:
+            original_model_task_id: The task ID of the original model.
+
+        Returns:
+            The task ID for the rigging check task.
+
+        Raises:
+            TripoRequestError: If the request fails.
+            TripoAPIError: If the API returns an error.
+        """
+        task_data = {
+            "type": "animate_prerigcheck",
+            "original_model_task_id": original_model_task_id
+        }
+
+        return await self.create_task(task_data)
+
+    async def rig_model(
+        self,
+        original_model_task_id: str,
+        out_format: str = "glb",
+        spec: str = "tripo"
+    ) -> str:
+        """
+        Rig a 3D model for animation.
+
+        Args:
+            original_model_task_id: The task ID of the original model.
+            out_format: Output format, either "glb" or "fbx". Default: "glb"
+            spec: Rigging specification, either "mixamo" or "tripo". Default: "tripo"
+
+        Returns:
+            The task ID for the rigging task.
+
+        Raises:
+            TripoRequestError: If the request fails.
+            TripoAPIError: If the API returns an error.
+            ValueError: If parameters are invalid.
+        """
+        if out_format not in ["glb", "fbx"]:
+            raise ValueError("out_format must be either 'glb' or 'fbx'")
+        
+        if spec not in ["mixamo", "tripo"]:
+            raise ValueError("spec must be either 'mixamo' or 'tripo'")
+
+        task_data = {
+            "type": "animate_rig",
+            "original_model_task_id": original_model_task_id,
+            "out_format": out_format,
+            "spec": spec
+        }
+
+        return await self.create_task(task_data)
+
+    async def retarget_animation(
+        self,
+        original_model_task_id: str,
+        animation: Animation,
+        out_format: str = "glb",
+        bake_animation: bool = True
+    ) -> str:
+        """
+        Apply an animation to a rigged model.
+
+        Args:
+            original_model_task_id: The task ID of the original model.
+            animation: The animation to apply from Animation enum.
+            out_format: Output format, either "glb" or "fbx". Default: "glb"
+            bake_animation: Whether to bake the animation. Default: True
+
+        Returns:
+            The task ID for the animation retargeting task.
+
+        Raises:
+            TripoRequestError: If the request fails.
+            TripoAPIError: If the API returns an error.
+            ValueError: If parameters are invalid.
+        """
+        if out_format not in ["glb", "fbx"]:
+            raise ValueError("out_format must be either 'glb' or 'fbx'")
+
+        task_data = {
+            "type": "animate_retarget",
+            "original_model_task_id": original_model_task_id,
+            "animation": animation.value,
+            "out_format": out_format,
+            "bake_animation": bake_animation
+        }
+
+        return await self.create_task(task_data)
+

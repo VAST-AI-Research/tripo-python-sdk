@@ -8,6 +8,46 @@ from enum import Enum
 import datetime
 
 
+class Animation(str, Enum):
+    """Available preset animations for retargeting."""
+    IDLE = "preset:idle"
+    WALK = "preset:walk"
+    CLIMB = "preset:climb"
+    JUMP = "preset:jump"
+    RUN = "preset:run"
+    SLASH = "preset:slash"
+    SHOOT = "preset:shoot"
+    HURT = "preset:hurt"
+    FALL = "preset:fall"
+    TURN = "preset:turn"
+
+class ModelStyle(str, Enum):
+    """Available styles for model generation."""
+    # Person styles
+    PERSON_TO_CARTOON = "person:person2cartoon"
+
+    # Animal styles
+    ANIMAL_VENOM = "animal:venom"
+
+    # Object styles
+    OBJECT_CLAY = "object:clay"
+    OBJECT_STEAMPUNK = "object:steampunk"
+    OBJECT_CHRISTMAS = "object:christmas"
+    OBJECT_BARBIE = "object:barbie"
+
+    # Material styles
+    GOLD = "gold"
+    ANCIENT_BRONZE = "ancient_bronze"
+
+
+class PostStyle(str, Enum):
+    """Available styles for model postprocessing."""
+    # Stylization styles
+    LEGO = "lego"
+    VOXEL = "voxel"
+    VORONOI = "voronoi"
+    MINECRAFT = "minecraft"
+
 class TaskStatus(str, Enum):
     """Task status enum."""
     QUEUED = "queued"

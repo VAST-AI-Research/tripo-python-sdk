@@ -27,8 +27,9 @@ async with TripoClient() as client:
 
 ### Methods
 
+#### Common Methods
 
-#### upload_file
+##### upload_file
 
 ```python
 async def upload_file(self, file_path: str) -> str
@@ -48,7 +49,7 @@ Upload a file to the API.
 file_token = await client.upload_file("path/to/image.jpg")
 ```
 
-#### create_task
+##### create_task
 
 ```python
 async def create_task(self, task_data: Dict[str, Any]) -> str
@@ -72,7 +73,7 @@ task_id = await client.create_task({
 })
 ```
 
-#### get_task
+##### get_task
 
 ```python
 async def get_task(self, task_id: str) -> Task
@@ -93,7 +94,7 @@ task = await client.get_task("task-12345")
 print(f"Task status: {task.status}")
 ```
 
-#### wait_for_task
+##### wait_for_task
 
 ```python
 async def wait_for_task(
@@ -122,7 +123,7 @@ if task.status == "success":
     print(f"Model URL: {task.output.model}")
 ```
 
-#### download_task_models
+##### download_task_models
 
 ```python
 async def download_task_models(
@@ -169,7 +170,29 @@ if task.status == TaskStatus.SUCCESS:
             print(f"Downloaded {model_type}: {file_path}")
 ```
 
-#### text_to_model
+
+##### get_balance
+
+```python
+async def get_balance(self) -> Balance
+```
+
+Get the user's account balance.
+
+**Returns:**
+- A `Balance` object with account details.
+
+**Example:**
+
+```python
+balance = await client.get_balance()
+print(f"Available balance: {balance.balance}")
+print(f"Frozen amount: {balance.frozen}")
+```
+
+#### Generation Methods
+
+##### text_to_model
 
 ```python
 async def text_to_model(
@@ -184,7 +207,7 @@ async def text_to_model(
     model_seed: Optional[int] = None,
     texture_seed: Optional[int] = None,
     texture_quality: str = "standard",
-    style: Optional[str] = None,
+    style: Optional[ModelStyle] = None,
     auto_size: bool = False,
     quad: bool = False
 ) -> str
@@ -204,7 +227,7 @@ Creates a 3D model from a text prompt.
 - `model_seed`: Seed for 3D model generation randomization.
 - `texture_seed`: Seed for texture generation randomization.
 - `texture_quality`: Quality of the texture, "standard" or "detailed".
-- `style`: Style to apply to the model.
+- `style`: Style to apply to the model from ModelStyle enum. Used for initial model generation.
 - `auto_size`: Whether to automatically determine the model size.
 - `quad`: Whether to generate a quad (4-sided) model.
 
@@ -220,7 +243,7 @@ task_id = await client.text_to_model(
 )
 ```
 
-#### image_to_model
+##### image_to_model
 
 ```python
 async def image_to_model(
@@ -234,7 +257,7 @@ async def image_to_model(
     texture_seed: Optional[int] = None,
     texture_quality: str = "standard",
     texture_alignment: str = "original_image",
-    style: Optional[str] = None,
+    style: Optional[ModelStyle] = None,
     auto_size: bool = False,
     orientation: str = "default",
     quad: bool = False
@@ -257,7 +280,7 @@ Creates a 3D model from an image.
 - `texture_seed`: Seed for texture generation randomization.
 - `texture_quality`: Quality of the texture, "standard" or "detailed".
 - `texture_alignment`: How to align the texture, "original_image" or "geometry".
-- `style`: Style to apply to the model.
+- `style`: Style to apply to the model from ModelStyle enum. Used for initial model generation.
 - `auto_size`: Whether to automatically determine the model size.
 - `orientation`: The orientation of the model, "default" or "align_image".
 - `quad`: Whether to generate a quad (4-sided) model.
@@ -289,7 +312,7 @@ task_id = await client.image_to_model(
 )
 ```
 
-#### multiview_to_model
+##### multiview_to_model
 
 ```python
 async def multiview_to_model(
@@ -303,7 +326,6 @@ async def multiview_to_model(
     texture_seed: Optional[int] = None,
     texture_quality: str = "standard",
     texture_alignment: str = "original_image",
-    style: Optional[str] = None,
     auto_size: bool = False,
     orientation: str = "default",
     quad: bool = False
@@ -325,7 +347,6 @@ Creates a 3D model from multiple view images.
 - `texture_seed`: Seed for texture generation randomization.
 - `texture_quality`: Quality of the texture, "standard" or "detailed".
 - `texture_alignment`: How to align the texture, "original_image" or "geometry".
-- `style`: Style to apply to the model.
 - `auto_size`: Whether to automatically determine the model size.
 - `orientation`: The orientation of the model, "default" or "align_image".
 - `quad`: Whether to generate a quad (4-sided) model.
@@ -333,7 +354,7 @@ Creates a 3D model from multiple view images.
 **Returns:**
 - The task ID as a string.
 
-#### convert_model
+##### convert_model
 
 ```python
 async def convert_model(
@@ -368,32 +389,32 @@ Convert a 3D model to different format.
 **Returns:**
 - The task ID as a string.
 
-#### stylize_model
+##### stylize_model
 
 ```python
 async def stylize_model(
     self,
     original_model_task_id: str,
-    style: str,
+    style: PostStyle,
     block_size: int = 80
 ) -> str
 ```
 
-Apply a style to an existing 3D model.
+Apply a post-processing style to an existing 3D model.
 
 **Parameters:**
 - `original_model_task_id`: The task ID of the model to stylize.
-- `style`: Style to apply. One of:
-  - "lego"
-  - "voxel"
-  - "voronoi"
-  - "minecraft"
+- `style`: Style to apply from PostStyle enum. Available options:
+  - `PostStyle.LEGO`
+  - `PostStyle.VOXEL`
+  - `PostStyle.VORONOI`
+  - `PostStyle.MINECRAFT`
 - `block_size`: Size of the blocks for stylization. Default: 80
 
 **Returns:**
 - The task ID as a string.
 
-#### texture_model
+##### texture_model
 
 ```python
 async def texture_model(
@@ -422,7 +443,7 @@ Generate new texture for an existing 3D model.
 **Returns:**
 - The task ID as a string.
 
-#### refine_model
+##### refine_model
 
 ```python
 async def refine_model(
@@ -439,22 +460,181 @@ Refine an existing 3D model.
 **Returns:**
 - The task ID as a string.
 
-
-#### get_balance
+##### check_riggable
 
 ```python
-async def get_balance(self) -> Balance
+async def check_riggable(
+    self,
+    original_model_task_id: str
+) -> str
 ```
 
-Get the user's account balance.
+Check if a model can be rigged for animation.
+
+**Parameters:**
+- `original_model_task_id`: The task ID of the model to check.
 
 **Returns:**
-- A `Balance` object with account details.
+- The task ID for the rigging check task.
 
 **Example:**
 
 ```python
-balance = await client.get_balance()
-print(f"Available balance: {balance.balance}")
-print(f"Frozen amount: {balance.frozen}")
+# Check if model can be rigged
+check_task_id = await client.check_riggable("task-12345")
+check_result = await client.wait_for_task(check_task_id)
+
+# Check the result
+if check_result.output.riggable:
+    print("Model can be rigged")
+else:
+    print("Model cannot be rigged")
+```
+
+##### rig_model
+
+```python
+async def rig_model(
+    self,
+    original_model_task_id: str,
+    out_format: str = "glb",
+    spec: str = "tripo"
+) -> str
+```
+
+Rig a 3D model for animation.
+
+**Parameters:**
+- `original_model_task_id`: The task ID of the model to rig.
+- `out_format`: Output format, either "glb" or "fbx". Default: "glb"
+- `spec`: Rigging specification, either "mixamo" or "tripo". Default: "tripo"
+
+**Returns:**
+- The task ID for the rigging task.
+
+**Raises:**
+- `ValueError`: If out_format is not "glb" or "fbx", or if spec is not "mixamo" or "tripo"
+- `TripoRequestError`: If the request fails.
+- `TripoAPIError`: If the API returns an error.
+
+**Example:**
+
+```python
+# First check if model can be rigged
+check_task_id = await client.check_riggable("task-12345")
+check_result = await client.wait_for_task(check_task_id)
+
+if check_result.output.riggable:
+    # Rig the model
+    rig_task_id = await client.rig_model(
+        original_model_task_id="task-12345",
+        out_format="glb",
+        spec="tripo"
+    )
+    rig_result = await client.wait_for_task(rig_task_id)
+```
+
+##### retarget_animation
+
+```python
+async def retarget_animation(
+    self,
+    original_model_task_id: str,
+    animation: Animation,
+    out_format: str = "glb",
+    bake_animation: bool = True
+) -> str
+```
+
+Apply an animation to a rigged model.
+
+**Parameters:**
+- `original_model_task_id`: The task ID of the original model.
+- `animation`: The animation to apply from Animation enum.
+- `out_format`: Output format, either "glb" or "fbx". Default: "glb"
+- `bake_animation`: Whether to bake the animation. Default: True
+
+**Returns:**
+- The task ID as a string.
+
+**Example:**
+
+```python
+task_id = await client.retarget_animation(
+    original_model_task_id="task-12345",
+    animation=Animation.WALK,
+    out_format="glb"
+)
+```
+
+## Enums
+
+### Animation
+
+Available preset animations for retargeting.
+
+```python
+class Animation(str, Enum):
+    IDLE = "preset:idle"
+    WALK = "preset:walk"
+    CLIMB = "preset:climb"
+    JUMP = "preset:jump"
+    RUN = "preset:run"
+    SLASH = "preset:slash"
+    SHOOT = "preset:shoot"
+    HURT = "preset:hurt"
+    FALL = "preset:fall"
+    TURN = "preset:turn"
+```
+
+### ModelStyle
+
+Available styles for model generation.
+
+```python
+class ModelStyle(str, Enum):
+    # Person styles
+    PERSON_TO_CARTOON = "person:person2cartoon"
+
+    # Animal styles
+    ANIMAL_VENOM = "animal:venom"
+
+    # Object styles
+    OBJECT_CLAY = "object:clay"
+    OBJECT_STEAMPUNK = "object:steampunk"
+    OBJECT_CHRISTMAS = "object:christmas"
+    OBJECT_BARBIE = "object:barbie"
+
+    # Material styles
+    GOLD = "gold"
+    ANCIENT_BRONZE = "ancient_bronze"
+```
+
+### PostStyle
+
+Available styles for model postprocessing.
+
+```python
+class PostStyle(str, Enum):
+    # Stylization styles
+    LEGO = "lego"
+    VOXEL = "voxel"
+    VORONOI = "voronoi"
+    MINECRAFT = "minecraft"
+```
+
+### TaskStatus
+
+Task status enumeration.
+
+```python
+class TaskStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+    BANNED = "banned"
+    EXPIRED = "expired"
 ```
