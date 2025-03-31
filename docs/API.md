@@ -5,7 +5,7 @@
 The `TripoClient` class is the main entry point for interacting with the Tripo API.
 
 ```python
-from tripo import TripoClient
+from tripo3d import TripoClient
 
 # Initialize with API key
 client = TripoClient(api_key="your_api_key")
