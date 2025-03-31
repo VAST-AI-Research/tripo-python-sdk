@@ -15,7 +15,7 @@ The Tripo Python SDK is the official Python client library for the [Tripo 3D Gen
 ## Installation
 
 ```bash
-pip install tripo
+pip install tripo3d
 ```
 
 ## Quick Start
@@ -24,7 +24,7 @@ pip install tripo
 
 ```python
 import asyncio
-from tripo import TripoClient
+from tripo3d import TripoClient
 
 async def main():
     # Initialize client with API key
@@ -48,7 +48,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from tripo import TripoClient
+from tripo3d import TripoClient
 
 async def text_to_model_example():
     async with TripoClient() as client:
@@ -81,7 +81,7 @@ asyncio.run(text_to_model_example())
 
 ```python
 import asyncio
-from tripo import TripoClient
+from tripo3d import TripoClient
 
 async def image_to_model_example():
     async with TripoClient() as client:
@@ -113,7 +113,7 @@ asyncio.run(image_to_model_example())
 
 ```python
 import asyncio
-from tripo import TripoClient
+from tripo3d import TripoClient
 
 async def multiview_to_model_example():
     async with TripoClient() as client:
@@ -150,7 +150,7 @@ asyncio.run(multiview_to_model_example())
 
 ```python
 import asyncio
-from tripo import TripoClient
+from tripo3d import TripoClient
 
 async def check_balance():
     async with TripoClient() as client:
