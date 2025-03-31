@@ -13,7 +13,7 @@ import re
 
 import aiohttp
 
-from .models import Task, Balance, TaskStatus
+from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus
 from .exceptions import TripoAPIError, TripoRequestError
 
 
