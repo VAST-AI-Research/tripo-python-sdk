@@ -302,7 +302,7 @@ class TripoClient:
             # Calculate next polling interval based on estimated time remaining
             if hasattr(task, 'running_left_time') and task.running_left_time is not None:
                 # Use 80% of the estimated remaining time as the next polling interval
-                polling_interval = max(2, task.running_left_time * 0.8)
+                polling_interval = max(2, task.running_left_time * 0.5)
             else:
                 polling_interval = polling_interval * 2
             # Wait before polling again
