@@ -7,8 +7,8 @@ import os
 import asyncio
 import argparse
 
-from tripo import TripoClient
-from tripo.models import TaskStatus
+from tripo3d import TripoClient
+from tripo3d.models import TaskStatus
 
 
 async def main(prompt: str, negative_prompt: str = None, output_dir: str = './output'):

@@ -6,20 +6,20 @@ clean:
 	find . -type f -name "*.pyc" -delete
 
 lint:
-	flake8 tripo
-	mypy tripo
-	black --check tripo
-	isort --check-only --profile black tripo
+	flake8 tripo3d
+	mypy tripo3d
+	black --check tripo3d
+	isort --check-only --profile black tripo3d
 
 format:
-	black tripo
-	isort --profile black tripo
+	black tripo3d
+	isort --profile black tripo3d
 
 test:
 	pytest -v
 
 test-cov:
-	pytest --cov=tripo --cov-report=html
+	pytest --cov=tripo3d --cov-report=html
 
 build:
 	python -m build

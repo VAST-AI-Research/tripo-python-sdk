@@ -4,7 +4,7 @@ Unit tests for exceptions.
 
 import pytest
 
-from tripo.exceptions import TripoAPIError, TripoRequestError
+from tripo3d.exceptions import TripoAPIError, TripoRequestError
 
 
 class TestTripoAPIError:

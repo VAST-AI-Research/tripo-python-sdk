@@ -3,7 +3,7 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tripo"
+name = "tripo3d"
 version = "0.1.0"
 description = "Python client for the Tripo 3D Generation API"
 readme = "README.md"
@@ -35,10 +35,10 @@ requires-python = ">=3.8"
 "Bug Tracker" = "https://github.com/VAST-AI-Research/tripo-python-sdk/issues"
 
 [tool.setuptools]
-packages = ["tripo"]
+packages = ["tripo3d"]
 
 [tool.pytest.ini_options]
-testpaths = ["tripo/tests"]
+testpaths = ["tripo3d/tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*" 

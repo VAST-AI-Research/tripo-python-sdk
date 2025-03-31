@@ -8,8 +8,8 @@ import asyncio
 import argparse
 from typing import Optional
 
-from tripo import TripoClient
-from tripo.models import TaskStatus
+from tripo3d import TripoClient
+from tripo3d.models import TaskStatus
 
 
 async def main(front: Optional[str], back: Optional[str], left: Optional[str], right: Optional[str], output_dir: str):

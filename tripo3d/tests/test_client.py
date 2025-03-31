@@ -7,8 +7,8 @@ import pytest
 import asyncio
 from unittest.mock import patch, MagicMock
 
-from tripo import TripoClient, TaskStatus, Task, Balance, TaskOutput, TopologyType
-from tripo.exceptions import TripoAPIError, TripoRequestError
+from tripo3d import TripoClient, TaskStatus, Task, Balance, TaskOutput, TopologyType
+from tripo3d.exceptions import TripoAPIError, TripoRequestError
 
 
 class TestTripoClient:

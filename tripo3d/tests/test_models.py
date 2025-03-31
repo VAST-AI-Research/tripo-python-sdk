@@ -6,7 +6,7 @@ import pytest
 import datetime
 from typing import Dict, Any
 
-from tripo.models import Task, TaskOutput, TaskStatus, TopologyType, Balance
+from tripo3d.models import Task, TaskOutput, TaskStatus, TopologyType, Balance
 
 
 class TestTaskOutput:
