@@ -163,11 +163,11 @@ asyncio.run(check_balance())
 
 ## Advanced Usage
 
-For more advanced usage examples, check out the [examples](https://github.com/tripo3d/tripo-python-sdk/tree/main/examples) directory.
+For more advanced usage examples, check out the [examples](https://github.com/VAST-AI-Research/tripo-python-sdk/tree/master/examples) directory.
 
 ## API Reference
 
-The complete API documentation can be found [here](https://github.com/tripo3d/tripo-python-sdk/blob/main/docs/API.md).
+The complete API documentation can be found [here](https://github.com/VAST-AI-Research/tripo-python-sdk/blob/master/docs/API.md).
 
 ## License
 
