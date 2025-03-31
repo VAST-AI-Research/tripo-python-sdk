@@ -1,6 +1,6 @@
-# Tripo Python SDK
+# Tripo3d Python SDK
 
-The Tripo Python SDK is the official Python client library for the [Tripo 3D Generation API](https://tripo3d.ai/). With this SDK, you can easily generate high-quality 3D models.
+The Tripo3d Python SDK is the official Python client library for the [Tripo 3D Generation API](https://tripo3d.ai/). With this SDK, you can easily generate high-quality 3D models.
 
 ## Features
 
@@ -8,6 +8,7 @@ The Tripo Python SDK is the official Python client library for the [Tripo 3D Gen
 - Image-to-3D model generation
 - Multi-view to 3D model generation
 - Model conversion and stylization
+- Rigging and retarget
 - Asynchronous API support
 - Complete type hints
 - Simple and easy-to-use interface
