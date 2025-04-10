@@ -248,7 +248,7 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        response = await self._request("GET", "/balance")
+        response = await self._request("GET", "/user/balance")
         return Balance.from_dict(response["data"])
 
     async def wait_for_task(
@@ -380,7 +380,7 @@ class TripoClient:
             task_data["texture_seed"] = texture_seed
 
         if style:
-            task_data["style"] = style.value
+            task_data["style"] = style
 
         return await self.create_task(task_data)
 
@@ -475,7 +475,7 @@ class TripoClient:
             task_data["texture_seed"] = texture_seed
 
         if style:
-            task_data["style"] = style.value
+            task_data["style"] = style
 
         return await self.create_task(task_data)
 
@@ -638,7 +638,7 @@ class TripoClient:
         task_data = {
             "type": "stylize_model",
             "original_model_task_id": original_model_task_id,
-            "style": style.value,
+            "style": style,
             "block_size": block_size
         }
 
@@ -902,7 +902,7 @@ class TripoClient:
         task_data = {
             "type": "animate_retarget",
             "original_model_task_id": original_model_task_id,
-            "animation": animation.value,
+            "animation": animation,
             "out_format": out_format,
             "bake_animation": bake_animation
         }
