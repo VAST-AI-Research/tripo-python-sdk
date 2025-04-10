@@ -8,14 +8,12 @@ import os
 import json
 import asyncio
 from typing import Dict, List, Optional, Any, Union, BinaryIO, Tuple, cast
-from urllib.parse import urljoin
 import re
-
-import aiohttp
+from dataclasses import dataclass
 
 from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus
 from .exceptions import TripoAPIError, TripoRequestError
-
+from .client_impl import ClientImpl
 
 class TripoClient:
     """Client for the Tripo 3D Generation API."""
@@ -42,118 +40,21 @@ class TripoClient:
 
         if not self.api_key.startswith('tsk_'):
             raise ValueError("API key must start with 'tsk_'")
-        self._session: Optional[aiohttp.ClientSession] = None
 
-    async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Ensure that an aiohttp session exists."""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self.api_key}"}
-            )
-        return self._session
+        self._impl = ClientImpl(self.api_key, self.BASE_URL)
+
 
     async def close(self) -> None:
-        """Close the aiohttp session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        """Close any open connections."""
+        await self._impl.close()
 
     async def __aenter__(self) -> 'TripoClient':
         """Enter the async context manager."""
-        await self._ensure_session()
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Exit the async context manager."""
         await self.close()
-
-    def _url(self, path: str) -> str:
-        """
-        Construct a full URL from a path.
-
-        Args:
-            path: The path to append to the base URL.
-
-        Returns:
-            The full URL.
-        """
-        # Remove leading slash if present
-        path = path.lstrip('/')
-
-        # Construct the full URL
-        return f"{self.BASE_URL}/{path}"
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        params: Optional[Dict[str, Any]] = None,
-        json_data: Optional[Dict[str, Any]] = None,
-        data: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
-        """
-        Make an HTTP request to the API.
-
-        Args:
-            method: The HTTP method to use.
-            path: The path to request.
-            params: Query parameters.
-            json_data: JSON data to send in the request body.
-            data: Form data to send in the request body.
-            headers: Additional headers to send with the request.
-
-        Returns:
-            The parsed JSON response.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        session = await self._ensure_session()
-        url = self._url(path)
-
-        try:
-            async with session.request(
-                method=method,
-                url=url,
-                params=params,
-                json=json_data,
-                data=data,
-                headers=headers
-            ) as response:
-                # Check if the response status is an error
-                if response.status >= 400:
-                    error_text = await response.text()
-                    try:
-                        error_data = await response.json()
-                        if "code" in error_data and "message" in error_data:
-                            raise TripoAPIError(
-                                code=error_data["code"],
-                                message=error_data["message"],
-                                suggestion=error_data.get("suggestion")
-                            )
-                    except:
-                        # If we can't parse the error as JSON, use the raw text
-                        raise TripoRequestError(
-                            status_code=response.status,
-                            message=f"Request failed: {response.reason}. Response: {error_text}"
-                        )
-
-                # Try to parse the response as JSON
-                try:
-                    response_data = await response.json()
-                except aiohttp.ContentTypeError as e:
-                    # If the response is not JSON, raise an error with details
-                    response_text = await response.text()
-                    raise TripoRequestError(
-                        status_code=response.status,
-                        message=f"Failed to parse response as JSON. URL: {url}, Status: {response.status}, Content-Type: {response.headers.get('Content-Type')}, Response: {response_text[:200]}..."
-                    )
-
-                return response_data
-        except aiohttp.ClientError as e:
-            raise TripoRequestError(status_code=0, message=f"Request error for {url}: {str(e)}")
 
     async def get_task(self, task_id: str) -> Task:
         """
@@ -169,56 +70,9 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        response = await self._request("GET", f"/task/{task_id}")
+        response = await self._impl._request("GET", f"/task/{task_id}")
         return Task.from_dict(response["data"])
 
-    async def upload_file(self, file_path: str) -> str:
-        """
-        Upload a file to the API.
-
-        Args:
-            file_path: The path to the file to upload.
-
-        Returns:
-            The image token for the uploaded file.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-            FileNotFoundError: If the file does not exist.
-        """
-        if not os.path.isfile(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        session = await self._ensure_session()
-        url = self._url("/upload")
-
-        try:
-            with open(file_path, "rb") as f:
-                form_data = aiohttp.FormData()
-                form_data.add_field("file", f, filename=os.path.basename(file_path))
-
-                async with session.post(url, data=form_data) as response:
-                    response_data = await response.json()
-
-                    if response.status >= 400:
-                        if "code" in response_data and "message" in response_data:
-                            raise TripoAPIError(
-                                code=response_data["code"],
-                                message=response_data["message"],
-                                suggestion=response_data.get("suggestion")
-                            )
-                        else:
-                            raise TripoRequestError(
-                                status_code=response.status,
-                                message=f"Upload failed: {response.reason}"
-                            )
-
-                    return response_data["data"]["image_token"]
-        except aiohttp.ClientError as e:
-            raise TripoRequestError(status_code=0, message=f"Upload error: {str(e)}")
-        except IOError as e:
-            raise TripoRequestError(status_code=0, message=f"File error: {str(e)}")
 
     async def create_task(self, task_data: Dict[str, Any]) -> str:
         """
@@ -234,7 +88,7 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        response = await self._request("POST", "/task", json_data=task_data)
+        response = await self._impl._request("POST", "/task", json_data=task_data)
         return response["data"]["task_id"]
 
     async def get_balance(self) -> Balance:
@@ -248,7 +102,7 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        response = await self._request("GET", "/user/balance")
+        response = await self._impl._request("GET", "/user/balance")
         return Balance.from_dict(response["data"])
 
     async def wait_for_task(
@@ -307,6 +161,193 @@ class TripoClient:
                 polling_interval = polling_interval * 2
             # Wait before polling again
             await asyncio.sleep(polling_interval)
+
+
+    async def download_task_models(
+        self,
+        task: Task,
+        output_dir: str,
+    ) -> Dict[str, str]:
+        """
+        Download model files from a completed task.
+
+        Args:
+            task: The completed task object.
+            output_dir: Directory to save the downloaded files.
+
+        Returns:
+            A dictionary containing the paths to the downloaded files:
+            {
+                "model": "path/to/model.glb",
+                "base_model": "path/to/base_model.glb",
+                "pbr_model": "path/to/pbr_model.glb"
+            }
+
+        Raises:
+            TripoRequestError: If the download fails.
+            ValueError: If the task is not successful or output_dir doesn't exist.
+            FileNotFoundError: If output_dir doesn't exist.
+        """
+        if task.status != TaskStatus.SUCCESS:
+            raise ValueError(f"Cannot download files from task with status: {task.status}")
+
+        if not os.path.exists(output_dir):
+            raise FileNotFoundError(f"Output directory not found: {output_dir}")
+
+        result = {}
+
+        def get_extension(url: str) -> str:
+            # Remove query parameters
+            path = url.split('?')[0]
+            # Get the last path component
+            filename = path.split('/')[-1]
+            # Get the extension, or default to .glb if none
+            ext = os.path.splitext(filename)[1]
+            return ext if ext else '.glb'
+
+        async def download_file(url: str, filename: str) -> Optional[str]:
+            if not url:
+                return None
+
+            output_path = os.path.join(output_dir, filename)
+
+            # Use the implementation's download method
+            await self._impl.download_file(url, output_path)
+            return output_path
+
+        # Download main model
+        if task.output.model:
+            ext = get_extension(task.output.model)
+            model_filename = f"{task.task_id}_model{ext}"
+            result["model"] = await download_file(task.output.model, model_filename)
+
+        # Download base model
+        if task.output.base_model:
+            ext = get_extension(task.output.base_model)
+            base_filename = f"{task.task_id}_base{ext}"
+            result["base_model"] = await download_file(task.output.base_model, base_filename)
+
+        # Download PBR model
+        if task.output.pbr_model:
+            ext = get_extension(task.output.pbr_model)
+            pbr_filename = f"{task.task_id}_pbr{ext}"
+            result["pbr_model"] = await download_file(task.output.pbr_model, pbr_filename)
+
+        return result
+
+
+    async def download_rendered_image(
+        self,
+        task: Task,
+        output_dir: str,
+        filename: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Download the rendered image from a completed task.
+
+        Args:
+            task: The completed task object.
+            output_dir: Directory to save the downloaded file.
+            filename: Optional custom filename. If not provided, will use task_id_rendered.jpg
+
+        Returns:
+            The path to the downloaded file, or None if no rendered image is available.
+
+        Raises:
+            TripoRequestError: If the download fails.
+            ValueError: If the task is not successful or output_dir doesn't exist.
+            FileNotFoundError: If output_dir doesn't exist.
+        """
+        if task.status != TaskStatus.SUCCESS:
+            raise ValueError(f"Cannot download files from task with status: {task.status}")
+
+        if not os.path.exists(output_dir):
+            raise FileNotFoundError(f"Output directory not found: {output_dir}")
+
+        # If there's no rendered image, return None
+        if not task.output.rendered_image:
+            return None
+
+        # Determine the file extension from the URL
+        def get_extension(url: str) -> str:
+            # Remove query parameters
+            path = url.split('?')[0]
+            # Get the last path component
+            filename = path.split('/')[-1]
+            # Get the extension, or default to .jpg if none
+            ext = os.path.splitext(filename)[1]
+            return ext if ext else '.jpg'
+        
+        # Get the file extension
+        ext = get_extension(task.output.rendered_image)
+        
+        # Use provided filename or default
+        output_filename = filename if filename else f"{task.task_id}_rendered{ext}"
+        output_path = os.path.join(output_dir, output_filename)
+        
+        # Download the file
+        await self._impl.download_file(task.output.rendered_image, output_path)
+        
+        return output_path
+
+    async def upload_file(self, file_path: str) -> str:
+        """Upload a file to the API."""
+        """
+        Upload a file to the API.
+        
+        Args:
+            file_path: Path to the file to upload.
+            
+        Returns:
+            The file token for the uploaded file.
+            
+        Raises:
+            TripoRequestError: If the upload fails.
+            FileNotFoundError: If the file doesn't exist.
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+            
+        try:
+            import boto3
+            response = await self._impl._request('POST', "/upload/sts/token", json_data={"format": "jpeg"})
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=response["data"]["sts_ak"],
+                aws_secret_access_key=response["data"]["sts_sk"],
+                aws_session_token=response["data"]["session_token"]
+            )
+            s3_client.upload_file(file_path, response["data"]["resource_bucket"], response["data"]["resource_uri"])
+            return {
+                "object": {
+                    "bucket": response["data"]["resource_bucket"],
+                    "key": response["data"]["resource_uri"]
+                }
+            }
+        except ImportError:
+            # If boto3 is not available, fall back to standard upload
+            file_token = await self._impl.upload_file(file_path)
+            return { "file_token": file_token }
+
+
+    async def _image_to_file_content(self, image: str) -> Dict[str, Any]:
+        file_content = {
+            "type": "jpg"
+        }
+        # If image starts with http:// or https://, treat it as a URL
+        if image.startswith(("http://", "https://")):
+            file_content["url"] = image
+        # If image looks like a token (no file extension and not a path)
+        elif not os.path.exists(image) and re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', image, re.IGNORECASE):
+            file_content["file_token"] = image
+        else:
+            # Treat as a local file path
+            if not os.path.exists(image):
+                raise FileNotFoundError(f"Image file not found: {image}")
+            upload_result = await self.upload_file(image)
+            file_content.update(upload_result)
+        return file_content
+
 
     async def text_to_model(
         self,
@@ -383,23 +424,6 @@ class TripoClient:
             task_data["style"] = style
 
         return await self.create_task(task_data)
-
-    async def _image_to_file_content(self, image: str) -> Dict[str, Any]:
-        file_content = {
-            "type": "jpg"
-        }
-        # If image starts with http:// or https://, treat it as a URL
-        if image.startswith(("http://", "https://")):
-            file_content["url"] = image
-        # If image looks like a token (no file extension and not a path)
-        elif not os.path.exists(image) and re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', image, re.IGNORECASE):
-            file_content["file_token"] = image
-        else:
-            # Treat as a local file path
-            if not os.path.exists(image):
-                raise FileNotFoundError(f"Image file not found: {image}")
-            file_content["file_token"] = await self.upload_file(image)
-        return file_content
 
     async def image_to_model(
         self,
@@ -669,7 +693,7 @@ class TripoClient:
             texture_alignment: How to align the texture. One of:
                             - "original_image"
                             - "geometry"
-                            Default: "original_image"
+            Default: "original_image"
 
         Returns:
             The task ID.
@@ -721,96 +745,6 @@ class TripoClient:
 
         return await self.create_task(task_data)
 
-    async def download_task_models(
-        self,
-        task: Task,
-        output_dir: str,
-    ) -> Dict[str, str]:
-        """
-        Download model files from a completed task.
-
-        Args:
-            task: The completed task object.
-            output_dir: Directory to save the downloaded files.
-
-        Returns:
-            A dictionary containing the paths to the downloaded files:
-            {
-                "model": "path/to/model.glb",
-                "base_model": "path/to/base_model.glb",
-                "pbr_model": "path/to/pbr_model.glb"
-            }
-
-        Raises:
-            TripoRequestError: If the download fails.
-            ValueError: If the task is not successful or output_dir doesn't exist.
-            FileNotFoundError: If output_dir doesn't exist.
-        """
-        if task.status != TaskStatus.SUCCESS:
-            raise ValueError(f"Cannot download files from task with status: {task.status}")
-
-        if not os.path.exists(output_dir):
-            raise FileNotFoundError(f"Output directory not found: {output_dir}")
-
-        session = await self._ensure_session()
-        result = {}
-
-        def get_extension(url: str) -> str:
-            # 移除查询参数
-            path = url.split('?')[0]
-            # 获取最后一个路径组件
-            filename = path.split('/')[-1]
-            # 获取扩展名，如果没有则返回 .glb 作为默认值
-            ext = os.path.splitext(filename)[1]
-            return ext if ext else '.glb'
-
-        async def download_file(url: str, filename: str) -> str:
-            if not url:
-                return None
-
-            output_path = os.path.join(output_dir, filename)
-            try:
-                async with session.get(url) as response:
-                    if response.status >= 400:
-                        raise TripoRequestError(
-                            status_code=response.status,
-                            message=f"Failed to download {filename}: {response.reason}"
-                        )
-                    
-                    with open(output_path, 'wb') as f:
-                        while True:
-                            chunk = await response.content.read(8192)  # 8KB chunks
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                
-                return output_path
-            except aiohttp.ClientError as e:
-                raise TripoRequestError(
-                    status_code=0,
-                    message=f"Download error for {filename}: {str(e)}"
-                )
-
-        # Download main model
-        if task.output.model:
-            ext = get_extension(task.output.model)
-            model_filename = f"{task.task_id}_model{ext}"
-            result["model"] = await download_file(task.output.model, model_filename)
-
-        # Download base model
-        if task.output.base_model:
-            ext = get_extension(task.output.base_model)
-            base_filename = f"{task.task_id}_base{ext}"
-            result["base_model"] = await download_file(task.output.base_model, base_filename)
-
-        # Download PBR model
-        if task.output.pbr_model:
-            ext = get_extension(task.output.pbr_model)
-            pbr_filename = f"{task.task_id}_pbr{ext}"
-            result["pbr_model"] = await download_file(task.output.pbr_model, pbr_filename)
-
-        return result
-
     async def check_riggable(
         self,
         original_model_task_id: str
@@ -859,7 +793,7 @@ class TripoClient:
         """
         if out_format not in ["glb", "fbx"]:
             raise ValueError("out_format must be either 'glb' or 'fbx'")
-        
+
         if spec not in ["mixamo", "tripo"]:
             raise ValueError("spec must be either 'mixamo' or 'tripo'")
 
@@ -908,4 +842,3 @@ class TripoClient:
         }
 
         return await self.create_task(task_data)
-

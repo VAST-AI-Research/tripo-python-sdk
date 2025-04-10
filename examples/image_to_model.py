@@ -20,26 +20,26 @@ async def main(image_path: str, output_dir: str):
         output_dir: Directory to save output files.
     """
     async with TripoClient() as client:
-        # 创建任务
+        # Create task
         task_id = await client.image_to_model(
             image=image_path,
         )
 
-        # 等待任务完成并显示进度
+        # Wait for task completion and show progress
         task = await client.wait_for_task(task_id, verbose=True)
 
         if task.status == TaskStatus.SUCCESS:
             print(f"Task completed successfully!")
 
-            # 创建输出目录（如果不存在）
+            # Create output directory (if it doesn't exist)
             os.makedirs(output_dir, exist_ok=True)
 
-            # 下载模型文件
+            # Download model files
             try:
                 print("Downloading model files...")
                 downloaded_files = await client.download_task_models(task, output_dir)
 
-                # 打印下载的文件路径
+                # Print downloaded file paths
                 for model_type, file_path in downloaded_files.items():
                     if file_path:
                         print(f"Downloaded {model_type}: {file_path}")

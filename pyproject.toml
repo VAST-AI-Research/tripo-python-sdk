@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tripo3d"
-version = "0.1.5"
+version = "0.2.0"
 description = "Python client for the Tripo 3D Generation API"
 readme = "README.md"
 authors = [
@@ -25,10 +25,12 @@ classifiers = [
     "Topic :: Multimedia :: Graphics :: 3D Modeling",
 ]
 keywords = ["tripo", "3d", "generation", "ai", "model", "api"]
-dependencies = [
-    "aiohttp>=3.8.0",
-]
+dependencies = []
 requires-python = ">=3.8"
+
+[project.optional-dependencies]
+async = ["aiohttp>=3.8.0"]
+s3 = ["boto3>=1.20.0"]
 
 [project.urls]
 "Homepage" = "https://github.com/VAST-AI-Research/tripo-python-sdk"
