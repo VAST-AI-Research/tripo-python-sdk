@@ -128,11 +128,10 @@ class AioHttpClientImpl(BaseClientImpl):
                     )
 
                 with open(output_path, 'wb') as f:
-                    while True:
-                        chunk = await response.content.read(8192)  # 8KB chunks
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                    chunk_size = 1024 * 1024  # 1MB chunks
+                    async for chunk in response.content.iter_chunked(chunk_size):
+                        if chunk:
+                            f.write(chunk)
         except aiohttp.ClientError as e:
             raise TripoRequestError(
                 status_code=0,

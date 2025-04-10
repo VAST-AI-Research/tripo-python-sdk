@@ -310,7 +310,7 @@ class TripoClient:
             
         try:
             import boto3
-            response = await self._impl._request('POST', "upload/sts/token")
+            response = await self._impl._request('POST', "/upload/sts/token", json_data={"format": "jpeg"})
             s3_client = boto3.client(
                 's3',
                 aws_access_key_id=response["data"]["sts_ak"],
