@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tripo3d"
-version = "0.2.0"
+version = "0.2.1"
 description = "Python client for the Tripo 3D Generation API"
 readme = "README.md"
 authors = [
@@ -36,11 +36,12 @@ s3 = ["boto3>=1.20.0"]
 "Homepage" = "https://github.com/VAST-AI-Research/tripo-python-sdk"
 "Bug Tracker" = "https://github.com/VAST-AI-Research/tripo-python-sdk/issues"
 
-[tool.setuptools]
-packages = ["tripo3d"]
+[tool.setuptools.packages.find]
+include = ["tripo3d*"]
+exclude = ["*.__pycache__*", "*.tests*", "*.test*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tripo3d/tests"]
+testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*" 
