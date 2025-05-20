@@ -93,6 +93,7 @@ class Task:
     running_left_time: Optional[int] = None
     queuing_num: Optional[int] = None
     error_code: Optional[int] = None
+    error_msg: Optional[str] = None
 
     @property
     def created_at(self) -> datetime.datetime:
@@ -112,7 +113,8 @@ class Task:
             create_time=data['create_time'],
             running_left_time=data.get('running_left_time'),
             queuing_num=data.get('queuing_num'),
-            error_code=data.get('error_code')
+            error_code=data.get('error_code'),
+            error_msg=data.get('error_msg')
         )
 
 
