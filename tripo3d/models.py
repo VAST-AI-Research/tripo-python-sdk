@@ -3,7 +3,7 @@ Data models for the Tripo API client.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, Optional, Any
 from enum import Enum
 import datetime
 

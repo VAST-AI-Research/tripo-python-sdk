@@ -5,14 +5,11 @@ This module provides a client for the Tripo 3D Generation API.
 """
 
 import os
-import json
 import asyncio
-from typing import Dict, List, Optional, Any, Union, BinaryIO, Tuple, cast
+from typing import Dict, List, Optional, Any
 import re
-from dataclasses import dataclass
 
 from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus
-from .exceptions import TripoAPIError, TripoRequestError
 from .client_impl import ClientImpl
 
 class TripoClient:
@@ -357,7 +354,7 @@ class TripoClient:
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
-        text_seed: Optional[int] = None,
+        image_seed: Optional[int] = None,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
         texture_quality: str = "standard",
@@ -375,7 +372,7 @@ class TripoClient:
             face_limit: The maximum number of faces.
             texture: Whether to generate texture.
             pbr: Whether to generate PBR materials.
-            text_seed: The text seed.
+            image_seed: The image seed.
             model_seed: The model seed.
             texture_seed: The texture seed.
             texture_quality: The texture quality.
@@ -411,8 +408,8 @@ class TripoClient:
         if face_limit is not None:
             task_data["face_limit"] = face_limit
 
-        if text_seed is not None:
-            task_data["text_seed"] = text_seed
+        if image_seed is not None:
+            task_data["image_seed"] = image_seed
 
         if model_seed is not None:
             task_data["model_seed"] = model_seed
