@@ -791,14 +791,16 @@ class TripoClient:
         if compress:
             task_data["compress"] = 'geometry'
 
-        if text_prompt is not None:
-            task_data["text_prompt"] = text_prompt
+        if text_prompt is not None or image_prompt is not None or style_image is not None:
+            task_data["texture_prompt "] = {}
+            if text_prompt is not None:
+                task_data["texture_prompt"]["text"] = text_prompt
 
-        if image_prompt is not None:
-            task_data["image_prompt"] = await self._image_to_file_content(image_prompt)
+            if image_prompt is not None:
+                task_data["texture_prompt"]["image"] = await self._image_to_file_content(image_prompt)
 
-        if style_image is not None:
-            task_data["style_image"] = await self._image_to_file_content(style_image)
+            if style_image is not None:
+                task_data["texture_prompt"]["style_image"] = await self._image_to_file_content(style_image)
 
         return await self.create_task(task_data)
 
