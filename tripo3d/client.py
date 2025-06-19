@@ -6,10 +6,10 @@ This module provides a client for the Tripo 3D Generation API.
 
 import os
 import asyncio
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 import re
 
-from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus
+from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus, RigType, RigSpec
 from .client_impl import ClientImpl
 
 class TripoClient:
@@ -274,37 +274,37 @@ class TripoClient:
             # Get the extension, or default to .jpg if none
             ext = os.path.splitext(filename)[1]
             return ext if ext else '.jpg'
-        
+
         # Get the file extension
         ext = get_extension(task.output.rendered_image)
-        
+
         # Use provided filename or default
         output_filename = filename if filename else f"{task.task_id}_rendered{ext}"
         output_path = os.path.join(output_dir, output_filename)
-        
+
         # Download the file
         await self._impl.download_file(task.output.rendered_image, output_path)
-        
+
         return output_path
 
     async def upload_file(self, file_path: str) -> str:
         """Upload a file to the API."""
         """
         Upload a file to the API.
-        
+
         Args:
             file_path: Path to the file to upload.
-            
+
         Returns:
             The file token for the uploaded file.
-            
+
         Raises:
             TripoRequestError: If the upload fails.
             FileNotFoundError: If the file doesn't exist.
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-            
+
         try:
             import boto3
             response = await self._impl._request('POST', "/upload/sts/token", json_data={"format": "jpeg"})
@@ -360,7 +360,10 @@ class TripoClient:
         texture_quality: str = "standard",
         style: Optional[ModelStyle] = None,
         auto_size: bool = False,
-        quad: bool = False
+        quad: bool = False,
+        compress: bool = False,
+        generate_parts : bool = False,
+        smart_low_poly: bool = False,
     ) -> str:
         """
         Create a text to 3D model task.
@@ -379,7 +382,9 @@ class TripoClient:
             style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
             quad: Whether to generate a quad model.
-
+            compress: Whether to compress the model.
+            generate_parts: Whether to generate parts.
+            smart_low_poly: Whether to use smart low poly.
         Returns:
             The task ID.
 
@@ -420,6 +425,15 @@ class TripoClient:
         if style:
             task_data["style"] = style
 
+        if compress:
+            task_data["compress"] = 'geometry'
+
+        if generate_parts:
+            task_data["generate_parts"] = generate_parts
+
+        if smart_low_poly:
+            task_data["smart_low_poly"] = smart_low_poly
+
         return await self.create_task(task_data)
 
     async def image_to_model(
@@ -436,7 +450,10 @@ class TripoClient:
         style: Optional[ModelStyle] = None,
         auto_size: bool = False,
         orientation: str = "default",
-        quad: bool = False
+        quad: bool = False,
+        compress: bool = False,
+        generate_parts : bool = False,
+        smart_low_poly: bool = False,
     ) -> str:
         """
         Create an image to 3D model task.
@@ -458,7 +475,9 @@ class TripoClient:
             auto_size: Whether to automatically determine the model size.
             orientation: The orientation.
             quad: Whether to generate a quad model.
-
+            compress: Whether to compress the model.
+            generate_parts: Whether to generate parts.
+            smart_low_poly: Whether to use smart low poly.
         Returns:
             The task ID.
 
@@ -498,6 +517,15 @@ class TripoClient:
         if style:
             task_data["style"] = style
 
+        if compress:
+            task_data["compress"] = 'geometry'
+
+        if generate_parts:
+            task_data["generate_parts"] = generate_parts
+
+        if smart_low_poly:
+            task_data["smart_low_poly"] = smart_low_poly
+
         return await self.create_task(task_data)
 
     async def multiview_to_model(
@@ -513,7 +541,10 @@ class TripoClient:
         texture_alignment: str = "original_image",
         auto_size: bool = False,
         orientation: str = "default",
-        quad: bool = False
+        quad: bool = False,
+        compress: bool = False,
+        generate_parts : bool = False,
+        smart_low_poly: bool = False,
     ) -> str:
         """
         Create a 3D model from multiple view images.
@@ -534,7 +565,9 @@ class TripoClient:
             auto_size: Whether to automatically determine the model size.
             orientation: The orientation of the model.
             quad: Whether to generate a quad model.
-
+            compress: Whether to compress the model.
+            generate_parts: Whether to generate parts.
+            smart_low_poly: Whether to use smart low poly.
         Returns:
             The task ID.
         """
@@ -577,9 +610,17 @@ class TripoClient:
 
         if texture_seed is not None:
             task_data["texture_seed"] = texture_seed
-
         if quad:
             task_data["quad"] = quad
+
+        if compress:
+            task_data["compress"] = 'geometry'
+
+        if generate_parts:
+            task_data["generate_parts"] = generate_parts
+
+        if smart_low_poly:
+            task_data["smart_low_poly"] = smart_low_poly
 
         return await self.create_task(task_data)
 
@@ -594,7 +635,11 @@ class TripoClient:
         flatten_bottom_threshold: float = 0.01,
         texture_size: int = 4096,
         texture_format: str = "JPEG",
-        pivot_to_center_bottom: bool = False
+        pivot_to_center_bottom: bool = False,
+        with_animation: bool = False,
+        pack_uv: bool = False,
+        bake: bool = True,
+        part_names: Optional[List[str]] = None,
     ) -> str:
         """
         Convert a 3D model to different format.
@@ -611,7 +656,10 @@ class TripoClient:
             texture_format: Format of the texture. One of: "BMP", "DPX", "HDR", "JPEG", "OPEN_EXR",
                           "PNG", "TARGA", "TIFF", "WEBP". Default: "JPEG"
             pivot_to_center_bottom: Whether to move pivot point to center bottom. Default: False
-
+            with_animation: Whether to export animation. Default: False
+            pack_uv: Whether to pack UV. Default: False
+            bake: Whether to bake the model. Default: True
+            part_names: List of part names to export.
         Returns:
             The task ID.
 
@@ -630,8 +678,14 @@ class TripoClient:
             "flatten_bottom_threshold": flatten_bottom_threshold,
             "texture_size": texture_size,
             "texture_format": texture_format,
-            "pivot_to_center_bottom": pivot_to_center_bottom
+            "pivot_to_center_bottom": pivot_to_center_bottom,
+            "with_animation": with_animation,
+            "pack_uv": pack_uv,
+            "bake": bake
         }
+
+        if part_names is not None:
+            task_data["part_names"] = part_names
 
         return await self.create_task(task_data)
 
@@ -673,7 +727,13 @@ class TripoClient:
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
         texture_quality: Optional[str] = "standard",
-        texture_alignment: str = "original_image"
+        texture_alignment: str = "original_image",
+        part_names: Optional[List[str]] = None,
+        compress: bool = False,
+        bake: bool = True,
+        text_prompt: Optional[str] = None,
+        image_prompt: Optional[str] = None,
+        style_image: Optional[str] = None,
     ) -> str:
         """
         Generate new texture for an existing 3D model.
@@ -691,7 +751,15 @@ class TripoClient:
                             - "original_image"
                             - "geometry"
             Default: "original_image"
-
+            part_names: List of part names to texture.
+            compress: Whether to compress the model.
+            bake: Whether to bake the model.
+            text_prompt: Text prompt for texture generation.
+            image_prompt: Image prompt for texture generation. It Can be:
+                  - A path to a local image file
+                  - A URL to an image
+                  - An image token from previous upload
+            style_image: Style image for texture generation. The same format as image_prompt.
         Returns:
             The task ID.
 
@@ -704,7 +772,8 @@ class TripoClient:
             "original_model_task_id": original_model_task_id,
             "texture": texture,
             "pbr": pbr,
-            "texture_alignment": texture_alignment
+            "texture_alignment": texture_alignment,
+            "bake": bake
         }
 
         if model_seed is not None:
@@ -715,6 +784,21 @@ class TripoClient:
 
         if texture_quality is not None:
             task_data["texture_quality"] = texture_quality
+
+        if part_names is not None:
+            task_data["part_names"] = part_names
+
+        if compress:
+            task_data["compress"] = 'geometry'
+
+        if text_prompt is not None:
+            task_data["text_prompt"] = text_prompt
+
+        if image_prompt is not None:
+            task_data["image_prompt"] = await self._image_to_file_content(image_prompt)
+
+        if style_image is not None:
+            task_data["style_image"] = await self._image_to_file_content(style_image)
 
         return await self.create_task(task_data)
 
@@ -770,7 +854,8 @@ class TripoClient:
         self,
         original_model_task_id: str,
         out_format: str = "glb",
-        spec: str = "tripo"
+        rig_type: Optional[RigType] = None,
+        spec: Optional[RigSpec] = None,
     ) -> str:
         """
         Rig a 3D model for animation.
@@ -778,6 +863,7 @@ class TripoClient:
         Args:
             original_model_task_id: The task ID of the original model.
             out_format: Output format, either "glb" or "fbx". Default: "glb"
+            rig_type: Rigging type, either "biped" or "quadruped" or "hexapod" or "octopod" or "avian" or "serpentine" or "aquatic" or "others". Default: "biped"
             spec: Rigging specification, either "mixamo" or "tripo". Default: "tripo"
 
         Returns:
@@ -791,8 +877,11 @@ class TripoClient:
         if out_format not in ["glb", "fbx"]:
             raise ValueError("out_format must be either 'glb' or 'fbx'")
 
-        if spec not in ["mixamo", "tripo"]:
-            raise ValueError("spec must be either 'mixamo' or 'tripo'")
+        if rig_type is not None:
+            task_data["rig_type"] = rig_type
+
+        if spec is not None:
+            task_data["spec"] = spec
 
         task_data = {
             "type": "animate_rig",
@@ -806,9 +895,10 @@ class TripoClient:
     async def retarget_animation(
         self,
         original_model_task_id: str,
-        animation: Animation,
+        animation: Union[Animation, List[Animation]],
         out_format: str = "glb",
-        bake_animation: bool = True
+        bake_animation: bool = True,
+        export_with_geometry: bool = False,
     ) -> str:
         """
         Apply an animation to a rigged model.
@@ -818,7 +908,7 @@ class TripoClient:
             animation: The animation to apply from Animation enum.
             out_format: Output format, either "glb" or "fbx". Default: "glb"
             bake_animation: Whether to bake the animation. Default: True
-
+            export_with_geometry: Whether to export the animation with geometry. Default: False
         Returns:
             The task ID for the animation retargeting task.
 
@@ -833,9 +923,112 @@ class TripoClient:
         task_data = {
             "type": "animate_retarget",
             "original_model_task_id": original_model_task_id,
-            "animation": animation,
             "out_format": out_format,
-            "bake_animation": bake_animation
+            "bake_animation": bake_animation,
+            "export_with_geometry": export_with_geometry
+        }
+
+        if isinstance(animation, Animation):
+            task_data["animation"] = animation
+        elif isinstance(animation, list):
+            task_data["animations"] = animation
+
+        return await self.create_task(task_data)
+
+    async def mesh_segmentation(
+        self,
+        original_model_task_id: str,
+        model_version: Optional[str] = "v1.0-20250506",
+    ) -> str:
+        """
+        Segment a 3D model.
+
+        Args:
+            original_model_task_id: The task ID of the original model.
+            model_version: The model version to use.
+        Returns:
+            The task ID.
+
+        Raises:
+            TripoRequestError: If the request fails.
+            TripoAPIError: If the API returns an error.
+        """
+        task_data = {
+            "type": "mesh_segmentation",
+            "original_model_task_id": original_model_task_id,
+            "model_version": model_version
         }
 
         return await self.create_task(task_data)
+
+    async def mesh_completion(
+        self,
+        original_model_task_id: str,
+        model_version: Optional[str] = "v1.0-20250506",
+        part_names: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Complete a 3D model.
+
+        Args:
+            original_model_task_id: The task ID of the original model.
+            model_version: The model version to use.
+            part_names: List of part names to complete.
+        Returns:
+            The task ID.
+
+        Raises:
+            TripoRequestError: If the request fails.
+            TripoAPIError: If the API returns an error.
+        """
+        task_data = {
+            "type": "mesh_completion",
+            "original_model_task_id": original_model_task_id,
+            "model_version": model_version
+        }
+
+        if part_names is not None:
+            task_data["part_names"] = part_names
+
+        return await self.create_task(task_data)
+
+    async def smart_lowpoly(
+        self,
+        original_model_task_id: str,
+        model_version: Optional[str] = "P-v1.0-20250506",
+        quad: bool = False,
+        part_names: Optional[List[str]] = None,
+        face_limit: Optional[int] = 4000,
+        bake: bool = True,
+    ) -> str:
+        """
+        Convert a high poly model to a low poly model.
+
+        Args:
+            original_model_task_id: The task ID of the original model.
+            model_version: The model version to use.
+            quad: Whether to generate a quad model.
+            part_names: List of part names to complete.
+            face_limit: The maximum number of faces.
+            bake: Whether to bake the model.
+        Returns:
+            The task ID.
+
+        Raises:
+            TripoRequestError: If the request fails.
+            TripoAPIError: If the API returns an error.
+        """
+        task_data = {
+            "type": "highpoly_to_lowpoly",
+            "original_model_task_id": original_model_task_id,
+            "model_version": model_version,
+            "quad": quad,
+            "bake": bake,
+            "face_limit": face_limit
+        }
+
+        if part_names is not None:
+            task_data["part_names"] = part_names
+
+        return await self.create_task(task_data)
+        

@@ -12,14 +12,20 @@ class Animation(str, Enum):
     """Available preset animations for retargeting."""
     IDLE = "preset:idle"
     WALK = "preset:walk"
+    RUN = "preset:run"
+    DIVE = "preset:dive"
     CLIMB = "preset:climb"
     JUMP = "preset:jump"
-    RUN = "preset:run"
     SLASH = "preset:slash"
     SHOOT = "preset:shoot"
     HURT = "preset:hurt"
     FALL = "preset:fall"
     TURN = "preset:turn"
+    QUADRUPED_WALK = "preset:quadruped:walk"
+    HEXAPOD_WALK = "preset:hexapod:walk"
+    OCTOPOD_WALK = "preset:octopod:walk"
+    SERPENTINE_MARCH = "preset:serpentine:march"
+    AQUATIC_MARCH = "preset:aquatic:march"
 
 class ModelStyle(str, Enum):
     """Available styles for model generation."""
@@ -59,6 +65,19 @@ class TaskStatus(str, Enum):
     BANNED = "banned"
     EXPIRED = "expired"
 
+class RigType(str, Enum):
+    BIPED = "biped"
+    QUADRUPED = "quadruped"
+    HEXAPOD = "hexapod"
+    OCTOPOD = "octopod"
+    AVIAN = "avian"
+    SERPENTINE = "serpentine"
+    AQUATIC = "aquatic"
+    OTHERS = "others"
+
+class RigSpec(str, Enum):
+    MIXAMO = "mixamo"
+    TRIPO = "tripo"
 
 @dataclass
 class TaskOutput:
@@ -68,6 +87,7 @@ class TaskOutput:
     pbr_model: Optional[str] = None
     rendered_image: Optional[str] = None
     riggable: Optional[bool] = None
+    rig_type: Optional[RigType] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'TaskOutput':
@@ -77,6 +97,7 @@ class TaskOutput:
             pbr_model=data.get('pbr_model'),
             rendered_image=data.get('rendered_image'),
             riggable=data.get('riggable'),
+            rig_type=data.get('rig_type'),
         )
 
 
