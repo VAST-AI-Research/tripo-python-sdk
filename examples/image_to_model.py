@@ -43,7 +43,7 @@ async def main(image_path: str, output_dir: str):
                 for model_type, file_path in downloaded_files.items():
                     if file_path:
                         print(f"Downloaded {model_type}: {file_path}")
-      
+
             except Exception as e:
                 print(f"Failed to download models: {str(e)}")
         else:

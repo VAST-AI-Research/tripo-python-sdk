@@ -854,8 +854,8 @@ class TripoClient:
         self,
         original_model_task_id: str,
         out_format: str = "glb",
-        rig_type: Optional[RigType] = None,
-        spec: Optional[RigSpec] = None,
+        rig_type: Optional[RigType] = RigType.BIPED,
+        spec: Optional[RigSpec] = RigSpec.TRIPO,
     ) -> str:
         """
         Rig a 3D model for animation.
@@ -877,16 +877,11 @@ class TripoClient:
         if out_format not in ["glb", "fbx"]:
             raise ValueError("out_format must be either 'glb' or 'fbx'")
 
-        if rig_type is not None:
-            task_data["rig_type"] = rig_type
-
-        if spec is not None:
-            task_data["spec"] = spec
-
         task_data = {
             "type": "animate_rig",
             "original_model_task_id": original_model_task_id,
             "out_format": out_format,
+            "rig_type": rig_type,
             "spec": spec
         }
 
@@ -1031,4 +1026,3 @@ class TripoClient:
             task_data["part_names"] = part_names
 
         return await self.create_task(task_data)
-        
