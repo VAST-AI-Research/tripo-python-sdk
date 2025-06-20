@@ -855,6 +855,7 @@ class TripoClient:
     async def rig_model(
         self,
         original_model_task_id: str,
+        model_version: Optional[str] = "v2.0-20250506",
         out_format: str = "glb",
         rig_type: Optional[RigType] = RigType.BIPED,
         spec: Optional[RigSpec] = RigSpec.TRIPO,
@@ -882,6 +883,7 @@ class TripoClient:
         task_data = {
             "type": "animate_rig",
             "original_model_task_id": original_model_task_id,
+            "model_version": model_version,
             "out_format": out_format,
             "rig_type": rig_type,
             "spec": spec
@@ -925,10 +927,10 @@ class TripoClient:
             "export_with_geometry": export_with_geometry
         }
 
-        if isinstance(animation, Animation):
-            task_data["animation"] = animation
-        elif isinstance(animation, list):
+        if isinstance(animation, list):
             task_data["animations"] = animation
+        else:
+            task_data["animation"] = animation
 
         return await self.create_task(task_data)
 
