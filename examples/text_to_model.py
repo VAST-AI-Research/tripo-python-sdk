@@ -45,7 +45,7 @@ async def main(prompt: str, negative_prompt: str = None, output_dir: str = './ou
                 for model_type, file_path in downloaded_files.items():
                     if file_path:
                         print(f"Downloaded {model_type}: {file_path}")
-      
+
             except Exception as e:
                 print(f"Failed to download models: {str(e)}")
         else:

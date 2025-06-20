@@ -7,6 +7,7 @@ The Tripo3d Python SDK is the official Python client library for the [Tripo 3D G
 - Text-to-3D model generation
 - Image-to-3D model generation
 - Multi-view to 3D model generation
+- Mesh Editing including mesh segmentation, mesh completion and smart lowpoly
 - Model conversion and stylization
 - Rigging and retarget
 - Asynchronous API support
@@ -30,14 +31,14 @@ from tripo3d import TripoClient
 async def main():
     # Initialize client with API key
     client = TripoClient(api_key="your_api_key")
-    
+
     # Or read from environment variable
     # export TRIPO_API_KEY=your_api_key
     # client = TripoClient()
-    
+
     # Use the client
     # ...
-    
+
     # Close client connection
     await client.close()
 
@@ -58,18 +59,18 @@ async def text_to_model_example():
             prompt="A cute cat",
             negative_prompt="low quality, blurry",
         )
-        
+
         print(f"Task ID: {task_id}")
-        
+
         # Wait for task completion
         task = await client.wait_for_task(task_id)
-        
+
         if task.status == TaskStatus.SUCCESS:
             print(f"Task completed successfully!")
-            
+
             # Download model files
             downloaded_files = await client.download_task_models(task, "./output")
-            
+
             # Print downloaded file paths
             for model_type, file_path in downloaded_files.items():
                 if file_path:
@@ -90,18 +91,18 @@ async def image_to_model_example():
         task_id = await client.image_to_model(
             image="path/to/your/image.jpg",
         )
-        
+
         print(f"Task ID: {task_id}")
-        
+
         # Wait for task completion and show progress
         task = await client.wait_for_task(task_id, verbose=True)
-        
+
         if task.status == TaskStatus.SUCCESS:
             print(f"Task completed successfully!")
-            
+
             # Download model files
             downloaded_files = await client.download_task_models(task, "./output")
-            
+
             # Print downloaded file paths
             for model_type, file_path in downloaded_files.items():
                 if file_path:
@@ -127,18 +128,18 @@ async def multiview_to_model_example():
                 "path/to/right.jpg"    # Right view (optional)
             ],
         )
-        
+
         print(f"Task ID: {task_id}")
-        
+
         # Wait for task completion and show progress
         task = await client.wait_for_task(task_id, verbose=True)
-        
+
         if task.status == TaskStatus.SUCCESS:
             print(f"Task completed successfully!")
-            
+
             # Download model files
             downloaded_files = await client.download_task_models(task, "./output")
-            
+
             # Print downloaded file paths
             for model_type, file_path in downloaded_files.items():
                 if file_path:

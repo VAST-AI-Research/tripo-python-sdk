@@ -5,7 +5,7 @@ import ssl
 import mimetypes
 import uuid
 from urllib.parse import urlparse, urlencode
-from typing import Dict, List, Optional, Any, Tuple, BinaryIO
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
 from ..exceptions import TripoAPIError, TripoRequestError
