@@ -791,8 +791,8 @@ class TripoClient:
         if compress:
             task_data["compress"] = 'geometry'
 
-        if text_prompt is not None or image_prompt is not None or style_image is not None:
-            task_data["texture_prompt "] = {}
+        if text_prompt or image_prompt or style_image:
+            task_data["texture_prompt"] = {}
             if text_prompt is not None:
                 task_data["texture_prompt"]["text"] = text_prompt
 
