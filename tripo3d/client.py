@@ -636,7 +636,7 @@ class TripoClient:
         texture_size: int = 4096,
         texture_format: str = "JPEG",
         pivot_to_center_bottom: bool = False,
-        with_animation: bool = False,
+        with_animation: bool = True,
         pack_uv: bool = False,
         bake: bool = True,
         part_names: Optional[List[str]] = None,
