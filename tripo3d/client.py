@@ -640,6 +640,8 @@ class TripoClient:
         pack_uv: bool = False,
         bake: bool = True,
         part_names: Optional[List[str]] = None,
+        export_vertex_colors: bool = False,
+        animate_in_place: bool = False,
     ) -> str:
         """
         Convert a 3D model to different format.
@@ -660,6 +662,7 @@ class TripoClient:
             pack_uv: Whether to pack UV. Default: False
             bake: Whether to bake the model. Default: True
             part_names: List of part names to export.
+            export_vertex_colors: Whether to export vertex colors.
         Returns:
             The task ID.
 
@@ -681,7 +684,9 @@ class TripoClient:
             "pivot_to_center_bottom": pivot_to_center_bottom,
             "with_animation": with_animation,
             "pack_uv": pack_uv,
-            "bake": bake
+            "bake": bake,
+            "export_vertex_colors": export_vertex_colors,
+            "animate_in_place": animate_in_place
         }
 
         if part_names is not None:
@@ -898,6 +903,7 @@ class TripoClient:
         out_format: str = "glb",
         bake_animation: bool = True,
         export_with_geometry: bool = False,
+        animate_in_place: bool = False,
     ) -> str:
         """
         Apply an animation to a rigged model.
@@ -924,7 +930,8 @@ class TripoClient:
             "original_model_task_id": original_model_task_id,
             "out_format": out_format,
             "bake_animation": bake_animation,
-            "export_with_geometry": export_with_geometry
+            "export_with_geometry": export_with_geometry,
+            "animate_in_place": animate_in_place
         }
 
         if isinstance(animation, list):

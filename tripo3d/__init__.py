@@ -8,7 +8,7 @@ from .client import TripoClient
 from .models import Animation, ModelStyle, PostStyle, RigType, RigSpec, Task, Balance, TaskStatus, TaskOutput
 from .exceptions import TripoAPIError, TripoRequestError
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 __all__ = [
     "TripoClient",
     "Animation",
