@@ -739,6 +739,7 @@ class TripoClient:
         text_prompt: Optional[str] = None,
         image_prompt: Optional[str] = None,
         style_image: Optional[str] = None,
+        model_version: Optional[str] = "v3.0-20250812",
     ) -> str:
         """
         Generate new texture for an existing 3D model.
@@ -765,6 +766,7 @@ class TripoClient:
                   - A URL to an image
                   - An image token from previous upload
             style_image: Style image for texture generation. The same format as image_prompt.
+            model_version: The model version to use.
         Returns:
             The task ID.
 
@@ -778,7 +780,8 @@ class TripoClient:
             "texture": texture,
             "pbr": pbr,
             "texture_alignment": texture_alignment,
-            "bake": bake
+            "bake": bake,
+            "model_version": model_version
         }
 
         if model_seed is not None:
