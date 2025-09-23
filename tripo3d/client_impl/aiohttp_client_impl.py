@@ -1,4 +1,5 @@
 import os
+import ssl
 import aiohttp
 from typing import Dict, Any, Optional
 from ..exceptions import TripoAPIError, TripoRequestError
@@ -7,15 +8,29 @@ from .base_client import BaseClientImpl
 class AioHttpClientImpl(BaseClientImpl):
     """Implementation using aiohttp library."""
 
-    def __init__(self, api_key: str, base_url: str):
-        super().__init__(api_key, base_url)
+    def __init__(self, api_key: str, base_url: str, verify_ssl: bool = True):
+        super().__init__(api_key, base_url, verify_ssl)
         self._session: Optional[aiohttp.ClientSession] = None
+        self._ssl_context = self._create_ssl_context(verify_ssl)
+
+    def _create_ssl_context(self, verify_ssl: bool) -> Optional[ssl.SSLContext]:
+        """Create SSL context based on verification settings."""
+        if not verify_ssl:
+            # Create an SSL context that doesn't verify certificates
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            return ssl_context
+        return None  # Use default SSL context
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure that an aiohttp session exists."""
         if self._session is None or self._session.closed:
+            # Create connector with SSL context
+            connector = aiohttp.TCPConnector(ssl=self._ssl_context)
             self._session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self.api_key}"}
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                connector=connector
             )
         return self._session
 

@@ -4,9 +4,10 @@ from typing import Dict, Any, Optional
 class BaseClientImpl:
     """Base implementation for Tripo API client."""
 
-    def __init__(self, api_key: str, base_url: str):
+    def __init__(self, api_key: str, base_url: str, verify_ssl: bool = True):
         self.api_key = api_key
         self.base_url = base_url
+        self.verify_ssl = verify_ssl
 
     def _url(self, path: str) -> str:
         """Construct a full URL from a path."""

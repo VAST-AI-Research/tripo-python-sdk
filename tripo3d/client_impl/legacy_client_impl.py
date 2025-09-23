@@ -66,12 +66,22 @@ class HttpResponse:
 class LegacyClientImpl(BaseClientImpl):
     """Implementation using raw sockets."""
 
-    def __init__(self, api_key: str, base_url: str):
-        super().__init__(api_key, base_url)
-        self._ssl_context = ssl.create_default_context()
+    def __init__(self, api_key: str, base_url: str, verify_ssl: bool = True):
+        super().__init__(api_key, base_url, verify_ssl)
+        self._ssl_context = self._create_ssl_context(verify_ssl)
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._host = urlparse(base_url).netloc
+
+    def _create_ssl_context(self, verify_ssl: bool) -> ssl.SSLContext:
+        """Create SSL context based on verification settings."""
+        if not verify_ssl:
+            # Create an SSL context that doesn't verify certificates
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            return ssl_context
+        return ssl.create_default_context()  # Use default SSL context
 
     async def _connect(self) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         """Establish connection to the API server."""
@@ -217,17 +227,14 @@ class LegacyClientImpl(BaseClientImpl):
 
     async def download_file(self, url: str, output_path: str) -> None:
         """Download a file using raw sockets."""
-        # Parse URL
         parsed_url = urlparse(url)
 
-        # Prepare headers
         headers = {
             'Host': parsed_url.netloc,
             'Authorization': f'Bearer {self.api_key}',
             'Connection': 'keep-alive'
         }
 
-        # Build request
         path = parsed_url.path
         if parsed_url.query:
             path = f"{path}?{parsed_url.query}"
@@ -240,18 +247,14 @@ class LegacyClientImpl(BaseClientImpl):
         ]
         request = "\r\n".join(request_lines).encode('utf-8')
 
-        # Create new connection for download
-        ssl_context = ssl.create_default_context()
         reader, writer = await asyncio.open_connection(
-            parsed_url.netloc, 443, ssl=ssl_context
+            parsed_url.netloc, 443, ssl=self._ssl_context
         )
 
         try:
-            # Send request
             writer.write(request)
             await writer.drain()
 
-            # Read response
             response = await self._read_response(reader)
 
             if response.status >= 400:
@@ -260,7 +263,6 @@ class LegacyClientImpl(BaseClientImpl):
                     message=f"Failed to download: HTTP {response.status}"
                 )
 
-            # Write response body to file
             with open(output_path, 'wb') as f:
                 f.write(response.body)
 

@@ -6,11 +6,13 @@ This module provides a client for the Tripo 3D Generation API.
 
 import os
 import asyncio
+import warnings
 from typing import Dict, List, Optional, Any, Union
 import re
 
 from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus, RigType, RigSpec
 from .client_impl import ClientImpl
+from .exceptions import TripoRequestError
 
 class TripoClient:
     """Client for the Tripo 3D Generation API."""
@@ -45,6 +47,41 @@ class TripoClient:
         """Close any open connections."""
         await self._impl.close()
 
+    def _is_ssl_error(self, error: Exception) -> bool:
+        """Check if the error is an SSL certificate verification error."""
+        error_str = str(error).lower()
+        ssl_error_indicators = [
+            'ssl certificate verification error',
+            'certificate_verify_failed',
+            'unable to get local issuer certificate',
+            'ssl: certificate_verify_failed',
+            'sslcertverificationerror'
+        ]
+        return any(indicator in error_str for indicator in ssl_error_indicators)
+
+    async def _download_with_ssl_retry(self, url: str, output_path: str) -> None:
+        """Download file with automatic SSL error retry."""
+        try:
+            # First try with normal SSL verification
+            await self._impl.download_file(url, output_path)
+        except Exception as e:
+            if self._is_ssl_error(e):
+                warnings.warn(
+                    "SSL certificate verification failed during download. Automatically retrying with SSL verification disabled. "
+                    "This reduces security but allows the download to proceed. "
+                    "Consider updating your system's certificate store for better security.",
+                    UserWarning
+                )
+                # Create a new implementation with SSL disabled just for this download
+                from .client_impl import ClientImpl
+                ssl_disabled_impl = ClientImpl(self.api_key, self.BASE_URL, verify_ssl=False)
+                try:
+                    await ssl_disabled_impl.download_file(url, output_path)
+                finally:
+                    await ssl_disabled_impl.close()
+            else:
+                raise
+
     async def __aenter__(self) -> 'TripoClient':
         """Enter the async context manager."""
         return self
@@ -67,7 +104,13 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        response = await self._impl._request("GET", f"/task/{task_id}")
+        # Add region header for China mainland users
+        headers = {}
+        from .geo_utils import get_china_mainland_status
+        if get_china_mainland_status():
+            headers["X-Tripo-Region"] = "rg2"
+
+        response = await self._impl._request("GET", f"/task/{task_id}", headers=headers)
         return Task.from_dict(response["data"])
 
 
@@ -190,7 +233,6 @@ class TripoClient:
 
         if not os.path.exists(output_dir):
             raise FileNotFoundError(f"Output directory not found: {output_dir}")
-
         result = {}
 
         def get_extension(url: str) -> str:
@@ -207,28 +249,47 @@ class TripoClient:
                 return None
 
             output_path = os.path.join(output_dir, filename)
-
-            # Use the implementation's download method
-            await self._impl.download_file(url, output_path)
+            # Use the download method with SSL retry
+            await self._download_with_ssl_retry(url, output_path)
             return output_path
 
-        # Download main model
-        if task.output.model:
+        # Collect all files to download
+        download_tasks = []
+
+        # Main model
+        if hasattr(task.output, 'model') and task.output.model:
             ext = get_extension(task.output.model)
             model_filename = f"{task.task_id}_model{ext}"
-            result["model"] = await download_file(task.output.model, model_filename)
+            download_tasks.append(('model', task.output.model, model_filename))
 
-        # Download base model
-        if task.output.base_model:
+        # Base model
+        if hasattr(task.output, 'base_model') and task.output.base_model:
             ext = get_extension(task.output.base_model)
             base_filename = f"{task.task_id}_base{ext}"
-            result["base_model"] = await download_file(task.output.base_model, base_filename)
+            download_tasks.append(('base_model', task.output.base_model, base_filename))
 
-        # Download PBR model
-        if task.output.pbr_model:
+        # PBR model
+        if hasattr(task.output, 'pbr_model') and task.output.pbr_model:
             ext = get_extension(task.output.pbr_model)
             pbr_filename = f"{task.task_id}_pbr{ext}"
-            result["pbr_model"] = await download_file(task.output.pbr_model, pbr_filename)
+            download_tasks.append(('pbr_model', task.output.pbr_model, pbr_filename))
+
+        # Download all files concurrently
+        if download_tasks:
+            download_coroutines = [
+                download_file(url, filename)
+                for _, url, filename in download_tasks
+            ]
+
+            download_results = await asyncio.gather(*download_coroutines, return_exceptions=True)
+
+            # Process download results
+            for i, (model_type, url, filename) in enumerate(download_tasks):
+                download_result = download_results[i]
+                if isinstance(download_result, Exception):
+                    result[model_type] = None
+                else:
+                    result[model_type] = download_result
 
         return result
 
@@ -282,8 +343,8 @@ class TripoClient:
         output_filename = filename if filename else f"{task.task_id}_rendered{ext}"
         output_path = os.path.join(output_dir, output_filename)
 
-        # Download the file
-        await self._impl.download_file(task.output.rendered_image, output_path)
+        # Download the file with SSL retry
+        await self._download_with_ssl_retry(task.output.rendered_image, output_path)
 
         return output_path
 
