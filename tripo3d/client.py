@@ -677,6 +677,7 @@ class TripoClient:
         flatten_bottom_threshold: Optional[float] = 0.01,
         texture_size: Optional[int] = 4096,
         texture_format: Optional[Literal["BMP", "DPX", "HDR", "JPEG", "OPEN_EXR", "PNG", "TARGA", "TIFF", "WEBP"]] = "JPEG",
+        scale_factor: Optional[float] = 1.0,
         pivot_to_center_bottom: Optional[bool] = False,
         with_animation: Optional[bool] = True,
         pack_uv: Optional[bool] = False,
@@ -701,6 +702,7 @@ class TripoClient:
             texture_size: Size of the texture. Default: 4096
             texture_format: Format of the texture. One of: "BMP", "DPX", "HDR", "JPEG", "OPEN_EXR",
                           "PNG", "TARGA", "TIFF", "WEBP". Default: "JPEG"
+            scale_factor: Scale factor for the model. Default: 1.0
             pivot_to_center_bottom: Whether to move pivot point to center bottom. Default: False
             with_animation: Whether to export animation. Default: False
             pack_uv: Whether to pack UV. Default: False
