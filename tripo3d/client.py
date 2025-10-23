@@ -7,12 +7,14 @@ This module provides a client for the Tripo 3D Generation API.
 import os
 import asyncio
 import warnings
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Literal
+import inspect
 import re
 
 from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus, RigType, RigSpec
 from .client_impl import ClientImpl
 from .exceptions import TripoRequestError
+
 
 class TripoClient:
     """Client for the Tripo 3D Generation API."""
@@ -185,13 +187,13 @@ class TripoClient:
             if task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.BANNED, TaskStatus.EXPIRED):
                 if verbose:
                     elapsed = asyncio.get_event_loop().time() - start_time
-                    print(f"Task {task_id} {task.status} in {elapsed} seconds")
+                    print(f"\nTask {task_id} {task.status} in {elapsed} seconds")
                 return task
 
             if verbose:
                 progress_bar = f"[{'=' * (task.progress // 5)}{' ' * (20 - task.progress // 5)}] {task.progress}%"
                 remaining_time = f", estimated time remaining: {task.running_left_time}s" if hasattr(task, 'running_left_time') and task.running_left_time is not None else ""
-                print(f"Task {task_id} is {task.status}. Progress: {progress_bar}{remaining_time}")
+                print(f"\rTask {task_id} is {task.status}. Progress: {progress_bar}{remaining_time}", end='', flush=True)
 
             # Calculate next polling interval based on estimated time remaining
             if hasattr(task, 'running_left_time') and task.running_left_time is not None:
@@ -406,25 +408,74 @@ class TripoClient:
             file_content.update(upload_result)
         return file_content
 
+    def _get_passed_args(self):
+        frame = inspect.currentframe().f_back
+        func = getattr(self, frame.f_code.co_name)
+        sig = inspect.signature(func)
+        locals_dict = frame.f_locals.copy()
+        parameters = sig.parameters
+        passed = {}
+        for name, param in parameters.items():
+            if name in ("self", "cls"):
+                continue
+            if name in locals_dict:
+                if param.default is inspect.Parameter.empty:
+                    passed[name] = locals_dict[name]
+                else:
+                    if locals_dict[name] != param.default:
+                        passed[name] = locals_dict[name]
+        return passed
+
+    def _add_optional_params(self, task_data: Dict[str, Any], passed_args: Dict[str, Any], additional_exclude: set = None, **special_handlers) -> None:
+        """
+        Add optional parameters to task_data only if they were explicitly passed by the user.
+        Automatically excludes parameters that are already in task_data.
+
+        Args:
+            task_data: The dictionary to add parameters to.
+            additional_exclude: Additional set of parameter names to exclude from automatic addition
+                               (beyond those already in task_data).
+            **special_handlers: Special handling functions for specific parameters.
+                               Key is parameter name, value is a function that takes the parameter value
+                               and returns the value to add to task_data (or None to skip).
+        """
+        # Automatically exclude parameters that are already in task_data
+        exclude = set(task_data.keys())
+
+        # Add any additional exclusions
+        if additional_exclude:
+            exclude.update(additional_exclude)
+
+        for param_name, param_value in passed_args.items():
+            if param_name in exclude:
+                continue
+
+            if param_name in special_handlers:
+                result = special_handlers[param_name](param_value)
+                if result is not None:
+                    task_data[param_name] = result
+            else:
+                task_data[param_name] = param_value
 
     async def text_to_model(
         self,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        model_version: Optional[str] = "v2.5-20250123",
+        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812"] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
         image_seed: Optional[int] = None,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: str = "standard",
+        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
+        geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
         style: Optional[ModelStyle] = None,
-        auto_size: bool = False,
-        quad: bool = False,
-        compress: bool = False,
-        generate_parts : bool = False,
-        smart_low_poly: bool = False,
+        auto_size: Optional[bool] = False,
+        quad: Optional[bool] = False,
+        compress: Optional[bool] = False,
+        generate_parts : Optional[bool] = False,
+        smart_low_poly: Optional[bool] = False,
     ) -> str:
         """
         Create a text to 3D model task.
@@ -440,6 +491,7 @@ class TripoClient:
             model_seed: The model seed.
             texture_seed: The texture seed.
             texture_quality: The texture quality.
+            geometry_quality: The geometry quality.
             style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
             quad: Whether to generate a quad model.
@@ -460,61 +512,36 @@ class TripoClient:
         task_data = {
             "type": "text_to_model",
             "prompt": prompt,
-            "model_version": model_version,
-            "texture": texture,
-            "pbr": pbr,
-            "auto_size": auto_size,
-            "quad": quad,
-            "texture_quality": texture_quality
         }
 
-        if negative_prompt:
-            task_data["negative_prompt"] = negative_prompt
-
-        if face_limit is not None:
-            task_data["face_limit"] = face_limit
-
-        if image_seed is not None:
-            task_data["image_seed"] = image_seed
-
-        if model_seed is not None:
-            task_data["model_seed"] = model_seed
-
-        if texture_seed is not None:
-            task_data["texture_seed"] = texture_seed
-
-        if style:
-            task_data["style"] = style
-
-        if compress:
-            task_data["compress"] = 'geometry'
-
-        if generate_parts:
-            task_data["generate_parts"] = generate_parts
-
-        if smart_low_poly:
-            task_data["smart_low_poly"] = smart_low_poly
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+            compress=lambda val: 'geometry' if val else None
+        )
 
         return await self.create_task(task_data)
 
     async def image_to_model(
         self,
-        image: Optional[str] = None,
-        model_version: Optional[str] = "v2.5-20250123",
+        image: str,
+        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812"] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: str = "standard",
-        texture_alignment: str = "original_image",
+        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
+        geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
+        texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
         style: Optional[ModelStyle] = None,
-        auto_size: bool = False,
-        orientation: str = "default",
-        quad: bool = False,
-        compress: bool = False,
-        generate_parts : bool = False,
-        smart_low_poly: bool = False,
+        auto_size: Optional[bool] = False,
+        orientation: Optional[Literal["default", "align_image"]] = "default",
+        quad: Optional[bool] = False,
+        compress: Optional[bool] = False,
+        generate_parts : Optional[bool] = False,
+        smart_low_poly: Optional[bool] = False,
     ) -> str:
         """
         Create an image to 3D model task.
@@ -531,6 +558,7 @@ class TripoClient:
             model_seed: The model seed.
             texture_seed: The texture seed.
             texture_quality: The texture quality.
+            geometry_quality: The geometry quality.
             texture_alignment: The texture alignment.
             style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
@@ -548,64 +576,38 @@ class TripoClient:
             FileNotFoundError: If the image file does not exist.
             ValueError: If no image is provided.
         """
-        # Check if image is a token, local path, or URL
-        if image is None:
-            raise ValueError("Image is required")
-
         # Create the task
         task_data = {
             "type": "image_to_model",
             "file": await self._image_to_file_content(image),
-            "model_version": model_version,
-            "texture": texture,
-            "pbr": pbr,
-            "auto_size": auto_size,
-            "quad": quad,
-            "texture_quality": texture_quality,
-            "texture_alignment": texture_alignment,
-            "orientation": orientation
         }
 
-        if face_limit is not None:
-            task_data["face_limit"] = face_limit
-
-        if model_seed is not None:
-            task_data["model_seed"] = model_seed
-
-        if texture_seed is not None:
-            task_data["texture_seed"] = texture_seed
-
-        if style:
-            task_data["style"] = style
-
-        if compress:
-            task_data["compress"] = 'geometry'
-
-        if generate_parts:
-            task_data["generate_parts"] = generate_parts
-
-        if smart_low_poly:
-            task_data["smart_low_poly"] = smart_low_poly
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+            compress=lambda val: 'geometry' if val else None
+        )
 
         return await self.create_task(task_data)
 
     async def multiview_to_model(
         self,
         images: List[str],
-        model_version: Optional[str] = "v2.5-20250123",
+        model_version: Literal["v2.0-20240919", "v2.5-20250123"] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: str = "standard",
-        texture_alignment: str = "original_image",
-        auto_size: bool = False,
-        orientation: str = "default",
-        quad: bool = False,
-        compress: bool = False,
-        generate_parts : bool = False,
-        smart_low_poly: bool = False,
+        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
+        texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
+        auto_size: Optional[bool] = False,
+        orientation: Optional[Literal["default", "align_image"]] = "default",
+        quad: Optional[bool] = False,
+        compress: Optional[bool] = False,
+        generate_parts : Optional[bool] = False,
+        smart_low_poly: Optional[bool] = False,
     ) -> str:
         """
         Create a 3D model from multiple view images.
@@ -653,56 +655,37 @@ class TripoClient:
         task_data = {
             "type": "multiview_to_model",
             "files": file_tokens,
-            "model_version": model_version,
-            "texture": texture,
-            "pbr": pbr,
-            "auto_size": auto_size,
-            "quad": quad,
-            "texture_quality": texture_quality,
-            "texture_alignment": texture_alignment,
-            "orientation": orientation
         }
 
-        if face_limit is not None:
-            task_data["face_limit"] = face_limit
-
-        if model_seed is not None:
-            task_data["model_seed"] = model_seed
-
-        if texture_seed is not None:
-            task_data["texture_seed"] = texture_seed
-        if quad:
-            task_data["quad"] = quad
-
-        if compress:
-            task_data["compress"] = 'geometry'
-
-        if generate_parts:
-            task_data["generate_parts"] = generate_parts
-
-        if smart_low_poly:
-            task_data["smart_low_poly"] = smart_low_poly
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+            compress=lambda val: 'geometry' if val else None
+        )
 
         return await self.create_task(task_data)
 
     async def convert_model(
         self,
         original_model_task_id: str,
-        format: str,
-        quad: bool = False,
-        force_symmetry: bool = False,
-        face_limit: int = 10000,
-        flatten_bottom: bool = False,
-        flatten_bottom_threshold: float = 0.01,
-        texture_size: int = 4096,
-        texture_format: str = "JPEG",
-        pivot_to_center_bottom: bool = False,
-        with_animation: bool = True,
-        pack_uv: bool = False,
-        bake: bool = True,
+        format: Literal["GLTF", "USDZ", "FBX", "OBJ", "STL", "3MF"],
+        quad: Optional[bool] = False,
+        force_symmetry: Optional[bool] = False,
+        face_limit: Optional[int] = None,
+        flatten_bottom: Optional[bool] = False,
+        flatten_bottom_threshold: Optional[float] = 0.01,
+        texture_size: Optional[int] = 4096,
+        texture_format: Optional[Literal["BMP", "DPX", "HDR", "JPEG", "OPEN_EXR", "PNG", "TARGA", "TIFF", "WEBP"]] = "JPEG",
+        pivot_to_center_bottom: Optional[bool] = False,
+        with_animation: Optional[bool] = True,
+        pack_uv: Optional[bool] = False,
+        bake: Optional[bool] = True,
         part_names: Optional[List[str]] = None,
-        export_vertex_colors: bool = False,
-        animate_in_place: bool = False,
+        export_vertex_colors: Optional[bool] = False,
+        fbx_preset: Optional[Literal["blender", "mixamo", "3dsmax"]] = "blender",
+        export_orientation: Optional[Literal["+x", "+y", "-x", "-y"]] = "+x",
+        animate_in_place: Optional[bool] = False,
     ) -> str:
         """
         Convert a 3D model to different format.
@@ -712,7 +695,7 @@ class TripoClient:
             format: Output format. One of: "GLTF", "USDZ", "FBX", "OBJ", "STL", "3MF"
             quad: Whether to generate quad mesh. Default: False
             force_symmetry: Whether to force model symmetry. Default: False
-            face_limit: Maximum number of faces. Default: 10000
+            face_limit: Maximum number of faces.
             flatten_bottom: Whether to flatten the bottom of the model. Default: False
             flatten_bottom_threshold: Threshold for bottom flattening. Default: 0.01
             texture_size: Size of the texture. Default: 4096
@@ -724,6 +707,9 @@ class TripoClient:
             bake: Whether to bake the model. Default: True
             part_names: List of part names to export.
             export_vertex_colors: Whether to export vertex colors.
+            fbx_preset: Preset for FBX export. One of: "blender", "mixamo", "3dsmax".
+            export_orientation: Orientation for export. One of: "+x", "+y", "-x", "-y".
+            animate_in_place: Whether to animate in place.
         Returns:
             The task ID.
 
@@ -735,23 +721,13 @@ class TripoClient:
             "type": "convert_model",
             "original_model_task_id": original_model_task_id,
             "format": format,
-            "quad": quad,
-            "force_symmetry": force_symmetry,
-            "face_limit": face_limit,
-            "flatten_bottom": flatten_bottom,
-            "flatten_bottom_threshold": flatten_bottom_threshold,
-            "texture_size": texture_size,
-            "texture_format": texture_format,
-            "pivot_to_center_bottom": pivot_to_center_bottom,
-            "with_animation": with_animation,
-            "pack_uv": pack_uv,
-            "bake": bake,
-            "export_vertex_colors": export_vertex_colors,
-            "animate_in_place": animate_in_place
         }
 
-        if part_names is not None:
-            task_data["part_names"] = part_names
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+        )
 
         return await self.create_task(task_data)
 
@@ -759,7 +735,7 @@ class TripoClient:
         self,
         original_model_task_id: str,
         style: PostStyle,
-        block_size: int = 80
+        block_size: Optional[int] = 80
     ) -> str:
         """
         Apply a style to an existing 3D model.
@@ -780,27 +756,32 @@ class TripoClient:
             "type": "stylize_model",
             "original_model_task_id": original_model_task_id,
             "style": style,
-            "block_size": block_size
         }
+
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+        )
 
         return await self.create_task(task_data)
 
     async def texture_model(
         self,
         original_model_task_id: str,
-        texture: bool = True,
-        pbr: bool = True,
+        texture: Optional[bool] = True,
+        pbr: Optional[bool] = True,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: Optional[str] = "standard",
-        texture_alignment: str = "original_image",
+        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
+        texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
         part_names: Optional[List[str]] = None,
-        compress: bool = False,
-        bake: bool = True,
+        compress: Optional[bool] = False,
+        bake: Optional[bool] = True,
         text_prompt: Optional[str] = None,
         image_prompt: Optional[str] = None,
         style_image: Optional[str] = None,
-        model_version: Optional[str] = "v3.0-20250812",
+        model_version: Optional[Literal["v2.5-20250123", "v3.0-20250812"]] = "v2.5-20250123",
     ) -> str:
         """
         Generate new texture for an existing 3D model.
@@ -838,38 +819,27 @@ class TripoClient:
         task_data = {
             "type": "texture_model",
             "original_model_task_id": original_model_task_id,
-            "texture": texture,
-            "pbr": pbr,
-            "texture_alignment": texture_alignment,
-            "bake": bake,
-            "model_version": model_version
         }
 
-        if model_seed is not None:
-            task_data["model_seed"] = model_seed
-
-        if texture_seed is not None:
-            task_data["texture_seed"] = texture_seed
-
-        if texture_quality is not None:
-            task_data["texture_quality"] = texture_quality
-
-        if part_names is not None:
-            task_data["part_names"] = part_names
-
-        if compress:
-            task_data["compress"] = 'geometry'
-
-        if text_prompt or image_prompt or style_image:
+        # Handle texture_prompt special case first
+        if 'text_prompt' in passed_args or 'image_prompt' in passed_args or 'style_image' in passed_args:
             task_data["texture_prompt"] = {}
-            if text_prompt is not None:
+            if 'text_prompt' in passed_args:
                 task_data["texture_prompt"]["text"] = text_prompt
 
-            if image_prompt is not None:
+            if 'image_prompt' in passed_args:
                 task_data["texture_prompt"]["image"] = await self._image_to_file_content(image_prompt)
 
-            if style_image is not None:
+            if 'style_image' in passed_args:
                 task_data["texture_prompt"]["style_image"] = await self._image_to_file_content(style_image)
+
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+            additional_exclude={'text_prompt', 'image_prompt', 'style_image'},
+            compress=lambda val: 'geometry' if val else None
+        )
 
         return await self.create_task(task_data)
 
@@ -919,13 +889,19 @@ class TripoClient:
             "original_model_task_id": original_model_task_id
         }
 
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+        )
+
         return await self.create_task(task_data)
 
     async def rig_model(
         self,
         original_model_task_id: str,
-        model_version: Optional[str] = "v2.0-20250506",
-        out_format: str = "glb",
+        model_version: Optional[Literal["v1.0-20240301", "v2.0-20250506"]] = "v1.0-20240301",
+        out_format: Optional[Literal["glb", "fbx"]] = "glb",
         rig_type: Optional[RigType] = RigType.BIPED,
         spec: Optional[RigSpec] = RigSpec.TRIPO,
     ) -> str:
@@ -946,17 +922,16 @@ class TripoClient:
             TripoAPIError: If the API returns an error.
             ValueError: If parameters are invalid.
         """
-        if out_format not in ["glb", "fbx"]:
-            raise ValueError("out_format must be either 'glb' or 'fbx'")
-
         task_data = {
             "type": "animate_rig",
             "original_model_task_id": original_model_task_id,
-            "model_version": model_version,
-            "out_format": out_format,
-            "rig_type": rig_type,
-            "spec": spec
         }
+
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+        )
 
         return await self.create_task(task_data)
 
@@ -964,10 +939,10 @@ class TripoClient:
         self,
         original_model_task_id: str,
         animation: Union[Animation, List[Animation]],
-        out_format: str = "glb",
-        bake_animation: bool = True,
-        export_with_geometry: bool = False,
-        animate_in_place: bool = False,
+        out_format: Optional[Literal["glb", "fbx"]] = "glb",
+        bake_animation: Optional[bool] = True,
+        export_with_geometry: Optional[bool] = False,
+        animate_in_place: Optional[bool] = False,
     ) -> str:
         """
         Apply an animation to a rigged model.
@@ -986,29 +961,30 @@ class TripoClient:
             TripoAPIError: If the API returns an error.
             ValueError: If parameters are invalid.
         """
-        if out_format not in ["glb", "fbx"]:
-            raise ValueError("out_format must be either 'glb' or 'fbx'")
-
         task_data = {
             "type": "animate_retarget",
             "original_model_task_id": original_model_task_id,
-            "out_format": out_format,
-            "bake_animation": bake_animation,
-            "export_with_geometry": export_with_geometry,
-            "animate_in_place": animate_in_place
         }
 
+        # Handle animation parameter
         if isinstance(animation, list):
             task_data["animations"] = animation
         else:
             task_data["animation"] = animation
+
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+            additional_exclude={'animation'}
+        )
 
         return await self.create_task(task_data)
 
     async def mesh_segmentation(
         self,
         original_model_task_id: str,
-        model_version: Optional[str] = "v1.0-20250506",
+        model_version: Optional[Literal["v1.0-20250506"]] = "v1.0-20250506",
     ) -> str:
         """
         Segment a 3D model.
@@ -1026,15 +1002,17 @@ class TripoClient:
         task_data = {
             "type": "mesh_segmentation",
             "original_model_task_id": original_model_task_id,
-            "model_version": model_version
         }
+
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(task_data)
 
         return await self.create_task(task_data)
 
     async def mesh_completion(
         self,
         original_model_task_id: str,
-        model_version: Optional[str] = "v1.0-20250506",
+        model_version: Optional[Literal["v1.0-20250506"]] = "v1.0-20250506",
         part_names: Optional[List[str]] = None,
     ) -> str:
         """
@@ -1054,22 +1032,24 @@ class TripoClient:
         task_data = {
             "type": "mesh_completion",
             "original_model_task_id": original_model_task_id,
-            "model_version": model_version
         }
 
-        if part_names is not None:
-            task_data["part_names"] = part_names
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+        )
 
         return await self.create_task(task_data)
 
     async def smart_lowpoly(
         self,
         original_model_task_id: str,
-        model_version: Optional[str] = "P-v1.0-20250506",
-        quad: bool = False,
+        model_version: Optional[Literal["P-v1.0-20250506"]] = "P-v1.0-20250506",
+        quad: Optional[bool] = False,
         part_names: Optional[List[str]] = None,
-        face_limit: Optional[int] = 4000,
-        bake: bool = True,
+        face_limit: Optional[int] = None,
+        bake: Optional[bool] = True,
     ) -> str:
         """
         Convert a high poly model to a low poly model.
@@ -1091,13 +1071,12 @@ class TripoClient:
         task_data = {
             "type": "highpoly_to_lowpoly",
             "original_model_task_id": original_model_task_id,
-            "model_version": model_version,
-            "quad": quad,
-            "bake": bake,
-            "face_limit": face_limit
         }
 
-        if part_names is not None:
-            task_data["part_names"] = part_names
+        # Add optional parameters that were explicitly passed
+        self._add_optional_params(
+            task_data,
+            passed_args = self._get_passed_args(),
+        )
 
         return await self.create_task(task_data)
