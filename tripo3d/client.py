@@ -419,6 +419,7 @@ class TripoClient:
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
         texture_quality: str = "standard",
+        geometry_quality: str = "standard",
         style: Optional[ModelStyle] = None,
         auto_size: bool = False,
         quad: bool = False,
@@ -440,6 +441,7 @@ class TripoClient:
             model_seed: The model seed.
             texture_seed: The texture seed.
             texture_quality: The texture quality.
+            geometry_quality: The geometry quality.
             style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
             quad: Whether to generate a quad model.
@@ -465,7 +467,8 @@ class TripoClient:
             "pbr": pbr,
             "auto_size": auto_size,
             "quad": quad,
-            "texture_quality": texture_quality
+            "texture_quality": texture_quality,
+            "geometry_quality": geometry_quality
         }
 
         if negative_prompt:
@@ -507,6 +510,7 @@ class TripoClient:
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
         texture_quality: str = "standard",
+        geometry_quality: str = "standard",
         texture_alignment: str = "original_image",
         style: Optional[ModelStyle] = None,
         auto_size: bool = False,
@@ -531,6 +535,7 @@ class TripoClient:
             model_seed: The model seed.
             texture_seed: The texture seed.
             texture_quality: The texture quality.
+            geometry_quality: The geometry quality.
             texture_alignment: The texture alignment.
             style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
@@ -562,6 +567,7 @@ class TripoClient:
             "auto_size": auto_size,
             "quad": quad,
             "texture_quality": texture_quality,
+            "geometry_quality": geometry_quality,
             "texture_alignment": texture_alignment,
             "orientation": orientation
         }
