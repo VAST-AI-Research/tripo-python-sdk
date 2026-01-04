@@ -1010,7 +1010,7 @@ class TripoClient:
         }
 
         # Add optional parameters that were explicitly passed
-        self._add_optional_params(task_data)
+        self._add_optional_params(task_data, passed_args=self._get_passed_args())
 
         return await self.create_task(task_data)
 
