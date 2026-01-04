@@ -595,13 +595,14 @@ class TripoClient:
     async def multiview_to_model(
         self,
         images: List[str],
-        model_version: Literal["v2.0-20240919", "v2.5-20250123"] = "v2.5-20250123",
+        model_version: Literal["v2.0-20240919", "v2.5-20250123", "v3.0-20250812"] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
         texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
+        geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
         texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
         auto_size: Optional[bool] = False,
         orientation: Optional[Literal["default", "align_image"]] = "default",
@@ -625,6 +626,7 @@ class TripoClient:
             model_seed: Seed for 3D model generation randomization.
             texture_seed: Seed for texture generation randomization.
             texture_quality: Quality of the texture.
+            geometry_quality: Quality of the geometry.
             texture_alignment: How to align the texture.
             auto_size: Whether to automatically determine the model size.
             orientation: The orientation of the model.
@@ -1048,7 +1050,7 @@ class TripoClient:
     async def smart_lowpoly(
         self,
         original_model_task_id: str,
-        model_version: Optional[Literal["P-v1.0-20250506"]] = "P-v1.0-20250506",
+        model_version: Optional[Literal["P-v2.0-20251226"]] = "P-v2.0-20251226",
         quad: Optional[bool] = False,
         part_names: Optional[List[str]] = None,
         face_limit: Optional[int] = None,
