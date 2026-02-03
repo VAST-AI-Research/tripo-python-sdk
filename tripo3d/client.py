@@ -6,6 +6,7 @@ This module provides a client for the Tripo 3D Generation API.
 
 import os
 import asyncio
+import time
 import warnings
 from typing import Dict, List, Optional, Any, Union, Literal
 import inspect
@@ -171,12 +172,12 @@ class TripoClient:
             TripoAPIError: If the API returns an error.
             asyncio.TimeoutError: If the task does not complete within the timeout.
         """
-        start_time = asyncio.get_event_loop().time()
+        start_time = time.monotonic()
 
         while True:
             # Check if we've exceeded the timeout
             if timeout is not None:
-                elapsed = asyncio.get_event_loop().time() - start_time
+                elapsed = time.monotonic() - start_time
                 if elapsed >= timeout:
                     raise asyncio.TimeoutError(f"Task {task_id} did not complete within {timeout} seconds")
 
@@ -186,7 +187,7 @@ class TripoClient:
             # If the task is done, return it
             if task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.BANNED, TaskStatus.EXPIRED):
                 if verbose:
-                    elapsed = asyncio.get_event_loop().time() - start_time
+                    elapsed = time.monotonic() - start_time
                     print(f"\nTask {task_id} {task.status} in {elapsed} seconds")
                 return task
 
@@ -200,7 +201,7 @@ class TripoClient:
                 # Use 80% of the estimated remaining time as the next polling interval
                 polling_interval = max(2, task.running_left_time * 0.5)
             else:
-                polling_interval = polling_interval * 2
+                polling_interval = min(polling_interval * 2, 30)
             # Wait before polling again
             await asyncio.sleep(polling_interval)
 
@@ -350,8 +351,7 @@ class TripoClient:
 
         return output_path
 
-    async def upload_file(self, file_path: str) -> str:
-        """Upload a file to the API."""
+    async def upload_file(self, file_path: str) -> Dict[str, Any]:
         """
         Upload a file to the API.
 
@@ -826,6 +826,8 @@ class TripoClient:
             "original_model_task_id": original_model_task_id,
         }
 
+        passed_args = self._get_passed_args()
+
         # Handle texture_prompt special case first
         if 'text_prompt' in passed_args or 'image_prompt' in passed_args or 'style_image' in passed_args:
             task_data["texture_prompt"] = {}
@@ -841,7 +843,7 @@ class TripoClient:
         # Add optional parameters that were explicitly passed
         self._add_optional_params(
             task_data,
-            passed_args = self._get_passed_args(),
+            passed_args=passed_args,
             additional_exclude={'text_prompt', 'image_prompt', 'style_image'},
             compress=lambda val: 'geometry' if val else None
         )

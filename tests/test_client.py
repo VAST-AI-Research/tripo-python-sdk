@@ -3,11 +3,12 @@ Unit tests for the TripoClient class.
 """
 
 import os
+import sys
 import pytest
 import asyncio
 from unittest.mock import patch, MagicMock
 
-from tripo3d import TripoClient, TaskStatus, Task, Balance, TaskOutput, TopologyType
+from tripo3d import TripoClient, TaskStatus, Task, Balance, TaskOutput
 from tripo3d.exceptions import TripoAPIError, TripoRequestError
 
 
@@ -17,7 +18,7 @@ class TestTripoClient:
     @pytest.fixture
     def api_key(self):
         """Fixture for the API key."""
-        return "test_api_key"
+        return "tsk_test_api_key"
     
     @pytest.fixture
     def client(self, api_key):
@@ -33,9 +34,9 @@ class TestTripoClient:
     def test_init_without_api_key(self):
         """Test initializing the client without an API key."""
         # Set the environment variable
-        with patch.dict(os.environ, {"TRIPO_API_KEY": "env_api_key"}):
+        with patch.dict(os.environ, {"TRIPO_API_KEY": "tsk_env_api_key"}):
             client = TripoClient()
-            assert client.api_key == "env_api_key"
+            assert client.api_key == "tsk_env_api_key"
             assert client._session is None
     
     def test_init_without_api_key_and_env(self):
@@ -171,8 +172,7 @@ class TestTripoClient:
                 "base_model": "https://example.com/base_model.glb",
                 "pbr_model": "https://example.com/pbr_model.glb",
                 "rendered_image": "https://example.com/image.png",
-                "riggable": True,
-                "topology": "bip"
+                "riggable": True
             },
             "progress": 100,
             "create_time": 1625097600
@@ -193,7 +193,6 @@ class TestTripoClient:
             assert task.output.pbr_model == "https://example.com/pbr_model.glb"
             assert task.output.rendered_image == "https://example.com/image.png"
             assert task.output.riggable is True
-            assert task.output.topology == TopologyType.BIP
             assert task.progress == 100
             assert task.create_time == 1625097600
     
@@ -396,8 +395,7 @@ class TestTripoClient:
                 base_model="https://example.com/base_model.glb",
                 pbr_model="https://example.com/pbr_model.glb",
                 rendered_image="https://example.com/image.png",
-                riggable=True,
-                topology=TopologyType.BIP
+                riggable=True
             ),
             progress=100,
             create_time=1625097600
@@ -648,4 +646,133 @@ class TestTripoClient:
                 "texture": True,
                 "pbr": True
             }
-            client.create_task.assert_called_once_with(expected_data) 
+            client.create_task.assert_called_once_with(expected_data)
+
+    @pytest.mark.asyncio
+    async def test_texture_model_with_text_prompt(self, client):
+        """Test texture_model correctly builds task_data when text_prompt is provided."""
+        with patch.object(client, 'create_task', return_value="task-123"):
+            task_id = await client.texture_model(
+                original_model_task_id="task-original",
+                text_prompt="shiny metal surface",
+                texture_seed=42,
+            )
+
+            assert task_id == "task-123"
+
+            call_args = client.create_task.call_args[0][0]
+            assert call_args["type"] == "texture_model"
+            assert call_args["original_model_task_id"] == "task-original"
+            assert call_args["texture_prompt"]["text"] == "shiny metal surface"
+            assert call_args["texture_seed"] == 42
+
+    @pytest.mark.asyncio
+    async def test_texture_model_minimal(self, client):
+        """Test texture_model works with only required params (no text/image/style prompts)."""
+        with patch.object(client, 'create_task', return_value="task-123"):
+            task_id = await client.texture_model(
+                original_model_task_id="task-original",
+            )
+
+            assert task_id == "task-123"
+
+            call_args = client.create_task.call_args[0][0]
+            assert call_args["type"] == "texture_model"
+            assert call_args["original_model_task_id"] == "task-original"
+            assert "texture_prompt" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_mesh_segmentation(self, client):
+        """Test mesh_segmentation passes optional params correctly."""
+        with patch.object(client, 'create_task', return_value="task-123"):
+            task_id = await client.mesh_segmentation(
+                original_model_task_id="task-original",
+            )
+
+            assert task_id == "task-123"
+
+            expected_data = {
+                "type": "mesh_segmentation",
+                "original_model_task_id": "task-original",
+            }
+            client.create_task.assert_called_once_with(expected_data)
+
+    @pytest.mark.asyncio
+    async def test_polling_backoff_capped(self, client):
+        """Test that polling interval is capped at 30 seconds."""
+        running_task = Task(
+            task_id="task-123",
+            type="text_to_model",
+            status=TaskStatus.RUNNING,
+            input={"prompt": "Test"},
+            output=TaskOutput(),
+            progress=50,
+            create_time=1625097600
+        )
+
+        success_task = Task(
+            task_id="task-123",
+            type="text_to_model",
+            status=TaskStatus.SUCCESS,
+            input={"prompt": "Test"},
+            output=TaskOutput(),
+            progress=100,
+            create_time=1625097600
+        )
+
+        sleep_values = []
+        original_sleep = asyncio.sleep
+
+        async def mock_sleep(seconds):
+            sleep_values.append(seconds)
+
+        # Return running 10 times, then success
+        side_effects = [running_task] * 10 + [success_task]
+
+        with patch.object(client, 'get_task', side_effect=side_effects), \
+             patch('asyncio.sleep', side_effect=mock_sleep):
+            await client.wait_for_task("task-123", polling_interval=1)
+
+        # With initial interval=1, doubling gives: 2, 4, 8, 16, 30, 30, 30, 30, 30, 30
+        # All values should be <= 30
+        for val in sleep_values:
+            assert val <= 30, f"Polling interval {val} exceeds cap of 30s"
+
+    @pytest.mark.asyncio
+    async def test_upload_file_returns_dict_with_boto3(self, client):
+        """Test that upload_file returns a dict when using boto3."""
+        mock_s3 = MagicMock()
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+
+        sts_response = {
+            "data": {
+                "s3_host": "s3.example.com",
+                "sts_ak": "ak",
+                "sts_sk": "sk",
+                "session_token": "token",
+                "resource_bucket": "bucket",
+                "resource_uri": "key/file.jpg",
+            }
+        }
+
+        with patch.object(client._impl, '_request', return_value=sts_response), \
+             patch('os.path.exists', return_value=True), \
+             patch.dict('sys.modules', {'boto3': mock_boto3}):
+            result = await client.upload_file("test.jpg")
+
+        assert isinstance(result, dict)
+        assert "object" in result
+        assert result["object"]["bucket"] == "bucket"
+        assert result["object"]["key"] == "key/file.jpg"
+
+    @pytest.mark.asyncio
+    async def test_upload_file_returns_dict_fallback(self, client):
+        """Test that upload_file returns a dict when boto3 is not available."""
+        with patch.object(client._impl, 'upload_file', return_value="file-token-123"), \
+             patch('os.path.exists', return_value=True), \
+             patch.dict('sys.modules', {'boto3': None}):
+            result = await client.upload_file("test.jpg")
+
+        assert isinstance(result, dict)
+        assert result == {"file_token": "file-token-123"}
