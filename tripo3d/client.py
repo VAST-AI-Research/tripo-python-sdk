@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Any, Union, Literal
 import inspect
 import re
 
-from .models import ModelStyle, Animation, PostStyle, Task, Balance, TaskStatus, RigType, RigSpec
+from .models import Animation, PostStyle, Task, Balance, TaskStatus, RigType, RigSpec
 from .client_impl import ClientImpl
 from .exceptions import TripoRequestError
 
@@ -23,7 +23,7 @@ class TripoClient:
     # The base URL for the Tripo API as specified in the OpenAPI schema
     BASE_URL = "https://api.tripo3d.ai/v2/openapi"
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, IS_GLOBAL: bool = True):
         """
         Initialize the Tripo API client.
 
@@ -42,6 +42,9 @@ class TripoClient:
 
         if not self.api_key.startswith('tsk_'):
             raise ValueError("API key must start with 'tsk_'")
+
+        if not IS_GLOBAL:
+            self.BASE_URL = "https://api.tripo3d.com/v2/openapi"
 
         self._impl = ClientImpl(self.api_key, self.BASE_URL)
 
@@ -462,7 +465,7 @@ class TripoClient:
         self,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812"] = "v2.5-20250123",
+        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v3.1-20260211",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -471,7 +474,6 @@ class TripoClient:
         texture_seed: Optional[int] = None,
         texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
         geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
-        style: Optional[ModelStyle] = None,
         auto_size: Optional[bool] = False,
         quad: Optional[bool] = False,
         compress: Optional[bool] = False,
@@ -493,7 +495,6 @@ class TripoClient:
             texture_seed: The texture seed.
             texture_quality: The texture quality.
             geometry_quality: The geometry quality.
-            style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
             quad: Whether to generate a quad model.
             compress: Whether to compress the model.
@@ -527,7 +528,7 @@ class TripoClient:
     async def image_to_model(
         self,
         image: str,
-        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812"] = "v2.5-20250123",
+        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v3.1-20260211",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -536,7 +537,6 @@ class TripoClient:
         texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
         geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
         texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
-        style: Optional[ModelStyle] = None,
         auto_size: Optional[bool] = False,
         orientation: Optional[Literal["default", "align_image"]] = "default",
         quad: Optional[bool] = False,
@@ -561,7 +561,6 @@ class TripoClient:
             texture_quality: The texture quality.
             geometry_quality: The geometry quality.
             texture_alignment: The texture alignment.
-            style: Style to apply from ModelStyle enum.
             auto_size: Whether to automatically determine the model size.
             orientation: The orientation.
             quad: Whether to generate a quad model.
@@ -595,7 +594,7 @@ class TripoClient:
     async def multiview_to_model(
         self,
         images: List[str],
-        model_version: Literal["v2.0-20240919", "v2.5-20250123", "v3.0-20250812"] = "v2.5-20250123",
+        model_version: Literal["v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v3.1-20260211",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,

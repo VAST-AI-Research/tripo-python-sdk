@@ -7,7 +7,7 @@ A Python client for the Tripo 3D Generation API.
 import os
 import threading
 from .client import TripoClient
-from .models import Animation, ModelStyle, PostStyle, RigType, RigSpec, Task, Balance, TaskStatus, TaskOutput
+from .models import Animation, PostStyle, RigType, RigSpec, Task, Balance, TaskStatus, TaskOutput
 from .exceptions import TripoAPIError, TripoRequestError
 
 
@@ -30,11 +30,10 @@ def _detect_location_background():
 _detection_thread = threading.Thread(target=_detect_location_background, daemon=True)
 _detection_thread.start()
 
-__version__ = "0.3.10"
+__version__ = "0.3.11"
 __all__ = [
     "TripoClient",
     "Animation",
-    "ModelStyle",
     "PostStyle",
     "RigType",
     "RigSpec",
