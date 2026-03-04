@@ -465,7 +465,7 @@ class TripoClient:
         self,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v3.1-20260211",
+        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -519,7 +519,7 @@ class TripoClient:
         # Add optional parameters that were explicitly passed
         self._add_optional_params(
             task_data,
-            passed_args = self._get_passed_args(),
+            passed_args=self._get_passed_args(),
             compress=lambda val: 'geometry' if val else None
         )
 
@@ -528,7 +528,7 @@ class TripoClient:
     async def image_to_model(
         self,
         image: str,
-        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v3.1-20260211",
+        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -585,16 +585,16 @@ class TripoClient:
         # Add optional parameters that were explicitly passed
         self._add_optional_params(
             task_data,
-            passed_args = self._get_passed_args(),
+            passed_args=self._get_passed_args(),
+            additional_exclude={"image"},
             compress=lambda val: 'geometry' if val else None
         )
-
         return await self.create_task(task_data)
 
     async def multiview_to_model(
         self,
         images: List[str],
-        model_version: Literal["v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v3.1-20260211",
+        model_version: Literal["v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -663,6 +663,7 @@ class TripoClient:
         self._add_optional_params(
             task_data,
             passed_args = self._get_passed_args(),
+            additional_exclude={"image"},
             compress=lambda val: 'geometry' if val else None
         )
 

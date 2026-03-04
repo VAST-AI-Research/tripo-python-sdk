@@ -30,7 +30,7 @@ def _detect_location_background():
 _detection_thread = threading.Thread(target=_detect_location_background, daemon=True)
 _detection_thread.start()
 
-__version__ = "0.3.11"
+__version__ = "0.3.12"
 __all__ = [
     "TripoClient",
     "Animation",
