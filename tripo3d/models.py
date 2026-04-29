@@ -70,9 +70,16 @@ class TaskOutput:
     rendered_image: Optional[str] = None
     riggable: Optional[bool] = None
     rig_type: Optional[RigType] = None
+    # Image outputs (generate_image / text_to_image / generate_multiview_image)
+    image: Optional[str] = None
+    front_view_url: Optional[str] = None
+    left_view_url: Optional[str] = None
+    back_view_url: Optional[str] = None
+    right_view_url: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'TaskOutput':
+        multiview = data.get('generate_multiview_image') or {}
         return cls(
             model=data.get('model'),
             base_model=data.get('base_model'),
@@ -80,6 +87,11 @@ class TaskOutput:
             rendered_image=data.get('rendered_image'),
             riggable=data.get('riggable'),
             rig_type=data.get('rig_type'),
+            image=data.get('image'),
+            front_view_url=multiview.get('front_view_url'),
+            left_view_url=multiview.get('left_view_url'),
+            back_view_url=multiview.get('back_view_url'),
+            right_view_url=multiview.get('right_view_url'),
         )
 
 

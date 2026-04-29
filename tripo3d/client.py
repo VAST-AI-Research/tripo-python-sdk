@@ -17,19 +17,37 @@ from .client_impl import ClientImpl
 from .exceptions import TripoRequestError
 
 
+REGION_CONFIG = {
+    "ov": {
+        "base_url": "https://api.tripo3d.ai/v2/openapi",
+    },
+    "cn": {
+        "base_url": "https://api.tripo3d.com/v2/openapi",
+    },
+}
+
+
 class TripoClient:
     """Client for the Tripo 3D Generation API."""
 
-    # The base URL for the Tripo API as specified in the OpenAPI schema
-    BASE_URL = "https://api.tripo3d.ai/v2/openapi"
-
-    def __init__(self, api_key: Optional[str] = None, IS_GLOBAL: bool = True):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        region: Optional[Literal["ov", "cn"]] = None,
+        base_url: Optional[str] = None,
+        IS_GLOBAL: bool = True,
+    ):
         """
         Initialize the Tripo API client.
 
         Args:
             api_key: The API key for authentication. If not provided, it will be read from the
                      TRIPO_API_KEY environment variable.
+            region: API region. "ov" for overseas (api.tripo3d.ai), "cn" for China mainland
+                    (api.tripo3d.com). Default is "ov". The old IS_GLOBAL=False is equivalent
+                    to region="cn".
+            base_url: Override the base URL directly. Takes precedence over region.
+            IS_GLOBAL: Deprecated. Use region="cn" instead of IS_GLOBAL=False.
 
         Raises:
             ValueError: If no API key is provided and the TRIPO_API_KEY environment variable is not set.
@@ -43,10 +61,19 @@ class TripoClient:
         if not self.api_key.startswith('tsk_'):
             raise ValueError("API key must start with 'tsk_'")
 
-        if not IS_GLOBAL:
-            self.BASE_URL = "https://api.tripo3d.com/v2/openapi"
+        if region is None and not IS_GLOBAL:
+            region = "cn"
+        self.region = region or "ov"
 
-        self._impl = ClientImpl(self.api_key, self.BASE_URL)
+        if base_url:
+            self.base_url = base_url
+        else:
+            cfg = REGION_CONFIG.get(self.region)
+            if cfg is None:
+                raise ValueError(f"Unknown region: {self.region!r}. Use 'ov' or 'cn'.")
+            self.base_url = cfg["base_url"]
+
+        self._impl = ClientImpl(self.api_key, self.base_url)
 
 
     async def close(self) -> None:
@@ -80,7 +107,7 @@ class TripoClient:
                 )
                 # Create a new implementation with SSL disabled just for this download
                 from .client_impl import ClientImpl
-                ssl_disabled_impl = ClientImpl(self.api_key, self.BASE_URL, verify_ssl=False)
+                ssl_disabled_impl = ClientImpl(self.api_key, self.base_url, verify_ssl=False)
                 try:
                     await ssl_disabled_impl.download_file(url, output_path)
                 finally:
@@ -259,26 +286,24 @@ class TripoClient:
             await self._download_with_ssl_retry(url, output_path)
             return output_path
 
-        # Collect all files to download
         download_tasks = []
 
-        # Main model
-        if hasattr(task.output, 'model') and task.output.model:
-            ext = get_extension(task.output.model)
-            model_filename = f"{task.task_id}_model{ext}"
-            download_tasks.append(('model', task.output.model, model_filename))
+        output_fields = [
+            ("model", task.output.model, "_model"),
+            ("base_model", task.output.base_model, "_base"),
+            ("pbr_model", task.output.pbr_model, "_pbr"),
+            ("rendered_image", task.output.rendered_image, "_rendered"),
+            ("image", task.output.image, "_image"),
+            ("front_view", task.output.front_view_url, "_front"),
+            ("left_view", task.output.left_view_url, "_left"),
+            ("back_view", task.output.back_view_url, "_back"),
+            ("right_view", task.output.right_view_url, "_right"),
+        ]
 
-        # Base model
-        if hasattr(task.output, 'base_model') and task.output.base_model:
-            ext = get_extension(task.output.base_model)
-            base_filename = f"{task.task_id}_base{ext}"
-            download_tasks.append(('base_model', task.output.base_model, base_filename))
-
-        # PBR model
-        if hasattr(task.output, 'pbr_model') and task.output.pbr_model:
-            ext = get_extension(task.output.pbr_model)
-            pbr_filename = f"{task.task_id}_pbr{ext}"
-            download_tasks.append(('pbr_model', task.output.pbr_model, pbr_filename))
+        for field_name, url, suffix in output_fields:
+            if url:
+                ext = get_extension(url)
+                download_tasks.append((field_name, url, f"{task.task_id}{suffix}{ext}"))
 
         # Download all files concurrently
         if download_tasks:
@@ -354,15 +379,21 @@ class TripoClient:
 
         return output_path
 
+    _EXT_TO_STS_FORMAT = {
+        ".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".webp": "webp",
+        ".glb": "glb", ".obj": "obj", ".fbx": "fbx", ".stl": "stl",
+    }
+
     async def upload_file(self, file_path: str) -> Dict[str, Any]:
         """
-        Upload a file to the API.
+        Upload a file to the API via STS (preferred) or direct upload fallback.
 
         Args:
             file_path: Path to the file to upload.
 
         Returns:
-            The file token for the uploaded file.
+            Dict with either ``{"object": {"bucket": ..., "key": ...}}`` (STS)
+            or ``{"file_token": ...}`` (legacy).
 
         Raises:
             TripoRequestError: If the upload fails.
@@ -371,27 +402,32 @@ class TripoClient:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
+        ext = os.path.splitext(file_path)[1].lower()
+        sts_format = self._EXT_TO_STS_FORMAT.get(ext, "jpeg")
+
         try:
             import boto3
-            response = await self._impl._request('POST', "/upload/sts/token", json_data={"format": "jpeg"})
+            response = await self._impl._request(
+                'POST', "/upload/sts/token", json_data={"format": sts_format}
+            )
+            data = response["data"]
             s3_client = boto3.client(
                 's3',
-                endpoint_url='https://' + response["data"]["s3_host"],
-                aws_access_key_id=response["data"]["sts_ak"],
-                aws_secret_access_key=response["data"]["sts_sk"],
-                aws_session_token=response["data"]["session_token"]
+                endpoint_url='https://' + data["s3_host"],
+                aws_access_key_id=data["sts_ak"],
+                aws_secret_access_key=data["sts_sk"],
+                aws_session_token=data["session_token"],
             )
-            s3_client.upload_file(file_path, response["data"]["resource_bucket"], response["data"]["resource_uri"])
+            s3_client.upload_file(file_path, data["resource_bucket"], data["resource_uri"])
             return {
                 "object": {
-                    "bucket": response["data"]["resource_bucket"],
-                    "key": response["data"]["resource_uri"]
+                    "bucket": data["resource_bucket"],
+                    "key": data["resource_uri"],
                 }
             }
         except ImportError:
-            # If boto3 is not available, fall back to standard upload
             file_token = await self._impl.upload_file(file_path)
-            return { "file_token": file_token }
+            return {"file_token": file_token}
 
 
     async def _image_to_file_content(self, image: str) -> Dict[str, Any]:
@@ -465,7 +501,11 @@ class TripoClient:
         self,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v2.5-20250123",
+        model_version: Literal[
+            "P1-20260311", "Turbo-v1.0-20250506",
+            "v3.1-20260211", "v3.0-20250812", "v2.5-20250123",
+            "v2.0-20240919", "v1.4-20240625",
+        ] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -477,8 +517,9 @@ class TripoClient:
         auto_size: Optional[bool] = False,
         quad: Optional[bool] = False,
         compress: Optional[bool] = False,
-        generate_parts : Optional[bool] = False,
+        generate_parts: Optional[bool] = False,
         smart_low_poly: Optional[bool] = False,
+        export_uv: Optional[bool] = True,
     ) -> str:
         """
         Create a text to 3D model task.
@@ -528,7 +569,11 @@ class TripoClient:
     async def image_to_model(
         self,
         image: str,
-        model_version: Literal["Turbo-v1.0-20250506", "v1.4-20240625", "v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v2.5-20250123",
+        model_version: Literal[
+            "P1-20260311", "Turbo-v1.0-20250506",
+            "v3.1-20260211", "v3.0-20250812", "v2.5-20250123",
+            "v2.0-20240919", "v1.4-20240625",
+        ] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -541,8 +586,10 @@ class TripoClient:
         orientation: Optional[Literal["default", "align_image"]] = "default",
         quad: Optional[bool] = False,
         compress: Optional[bool] = False,
-        generate_parts : Optional[bool] = False,
+        generate_parts: Optional[bool] = False,
         smart_low_poly: Optional[bool] = False,
+        enable_image_autofix: Optional[bool] = False,
+        export_uv: Optional[bool] = True,
     ) -> str:
         """
         Create an image to 3D model task.
@@ -593,8 +640,13 @@ class TripoClient:
 
     async def multiview_to_model(
         self,
-        images: List[str],
-        model_version: Literal["v2.0-20240919", "v2.5-20250123", "v3.0-20250812", "v3.1-20260211"] = "v2.5-20250123",
+        images: Optional[List[str]] = None,
+        original_task_id: Optional[str] = None,
+        model_version: Literal[
+            "P1-20260311",
+            "v3.1-20260211", "v3.0-20250812", "v2.5-20250123",
+            "v2.0-20240919",
+        ] = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
@@ -607,8 +659,9 @@ class TripoClient:
         orientation: Optional[Literal["default", "align_image"]] = "default",
         quad: Optional[bool] = False,
         compress: Optional[bool] = False,
-        generate_parts : Optional[bool] = False,
+        generate_parts: Optional[bool] = False,
         smart_low_poly: Optional[bool] = False,
+        export_uv: Optional[bool] = True,
     ) -> str:
         """
         Create a 3D model from multiple view images.
@@ -636,38 +689,228 @@ class TripoClient:
         Returns:
             The task ID.
         """
-        # Create tasks while preserving order
-        tasks = []
-        for i, image in enumerate(images):
-            if image is not None:
-                # Store both the task and its original index
-                tasks.append((i, self._image_to_file_content(image)))
-            else:
-                tasks.append((i, None))
+        if images is None and original_task_id is None:
+            raise ValueError("Either images or original_task_id must be provided.")
 
-        # Initialize file_tokens list with the correct size
-        file_tokens = [{} for _ in range(len(images))]
+        task_data: Dict[str, Any] = {"type": "multiview_to_model"}
 
-        # Wait for all uploads to complete and place results in correct positions
-        for i, task in tasks:
-            if task is not None:
-                file_tokens[i] = await task
+        if original_task_id is not None:
+            task_data["original_task_id"] = original_task_id
+        else:
+            tasks = []
+            for i, image in enumerate(images):
+                if image is not None:
+                    tasks.append((i, self._image_to_file_content(image)))
+                else:
+                    tasks.append((i, None))
 
-        # Create the task
-        task_data = {
-            "type": "multiview_to_model",
-            "files": file_tokens,
-        }
+            file_tokens = [{} for _ in range(len(images))]
+            for i, t in tasks:
+                if t is not None:
+                    file_tokens[i] = await t
+            task_data["files"] = file_tokens
 
-        # Add optional parameters that were explicitly passed
         self._add_optional_params(
             task_data,
-            passed_args = self._get_passed_args(),
-            additional_exclude={"image"},
-            compress=lambda val: 'geometry' if val else None
+            passed_args=self._get_passed_args(),
+            additional_exclude={"images", "original_task_id"},
+            compress=lambda val: 'geometry' if val else None,
         )
 
         return await self.create_task(task_data)
+
+    async def text_to_image(
+        self,
+        prompt: str,
+        negative_prompt: Optional[str] = None,
+    ) -> str:
+        """
+        Create a text-to-image generation task.
+
+        Args:
+            prompt: Text input that directs the image generation (max 1024 chars).
+            negative_prompt: Reverse guidance to exclude unwanted content (max 255 chars).
+
+        Returns:
+            The task ID.
+        """
+        if not prompt:
+            raise ValueError("Prompt is required.")
+
+        task_data: Dict[str, Any] = {
+            "type": "text_to_image",
+            "prompt": prompt,
+        }
+        self._add_optional_params(task_data, passed_args=self._get_passed_args())
+        return await self.create_task(task_data)
+
+    async def generate_image(
+        self,
+        prompt: Optional[str] = None,
+        model_version: Optional[str] = None,
+        file: Optional[str] = None,
+        files: Optional[List[str]] = None,
+        template: Optional[str] = None,
+        t_pose: Optional[bool] = False,
+        sketch_to_render: Optional[bool] = False,
+    ) -> str:
+        """
+        Advanced image generation with multi-model, multi-image-reference and template support.
+
+        Available model_version values differ by region:
+          - Overseas (ov): flux.1_kontext_pro (default), flux.1_dev, gpt_4o, z_image,
+            gpt_image_1.5, midjourney, gemini_2.5_flash_image_preview,
+            gemini_3_pro_image_preview, gemini_3.1_flash_image_preview
+          - China (cn): seedream_v4 (default), seedream_v5, flux.1_kontext_pro,
+            flux.1_dev, gemini_2.5_flash_image_preview,
+            gemini_3_pro_image_preview, gemini_3.1_flash_image_preview
+
+        Args:
+            prompt: Text input (max 1024 chars). Optional when template + file are both provided.
+            model_version: Image generation model. If None, the server picks the region default.
+            file: Single reference image (path / URL / file_token).
+            files: Multiple reference images (path / URL / file_token each).
+            template: Image template slug (e.g. "t-pose", "3d-enhance").
+            t_pose: Transform subject to T-pose while preserving features.
+            sketch_to_render: Transform a sketch into a rendered image.
+
+        Returns:
+            The task ID.
+        """
+        task_data: Dict[str, Any] = {"type": "generate_image"}
+
+        if prompt is not None:
+            task_data["prompt"] = prompt
+
+        passed = self._get_passed_args()
+
+        if file is not None:
+            task_data["file"] = await self._image_to_file_content(file)
+
+        if files is not None:
+            task_data["files"] = [await self._image_to_file_content(f) for f in files]
+
+        self._add_optional_params(
+            task_data,
+            passed_args=passed,
+            additional_exclude={"file", "files", "prompt"},
+        )
+        return await self.create_task(task_data)
+
+    async def generate_multiview_image(
+        self,
+        image: str,
+    ) -> str:
+        """
+        Generate four-view images (front / left / back / right) from a single input image.
+
+        The output can be chained into ``multiview_to_model(original_task_id=...)``
+        for a controllable image-to-3D pipeline.
+
+        Args:
+            image: Input image (path / URL / file_token).
+
+        Returns:
+            The task ID.
+        """
+        task_data: Dict[str, Any] = {
+            "type": "generate_multiview_image",
+            "file": await self._image_to_file_content(image),
+        }
+        return await self.create_task(task_data)
+
+    async def edit_multiview_image(
+        self,
+        original_task_id: str,
+        prompts: List[Dict[str, str]],
+    ) -> str:
+        """
+        Edit specific views of a multiview image set produced by ``generate_multiview_image``.
+
+        Args:
+            original_task_id: Task ID from a completed ``generate_multiview_image`` task.
+            prompts: Edit instructions per view, e.g.
+                     ``[{"view": "front", "prompt": "change shirt to red"}]``.
+                     Valid views: front, left, back, right.
+
+        Returns:
+            The task ID.
+        """
+        task_data: Dict[str, Any] = {
+            "type": "edit_multiview_image",
+            "original_task_id": original_task_id,
+            "prompts": prompts,
+        }
+        return await self.create_task(task_data)
+
+    async def import_model(
+        self,
+        file: str,
+    ) -> str:
+        """
+        Import an external 3D model file (GLB / OBJ / FBX / STL).
+
+        The imported model can then be used as input for texture_model, rig_model, etc.
+
+        Args:
+            file: Path to a local 3D model file. The file is auto-uploaded via STS.
+
+        Returns:
+            The task ID.
+        """
+        upload_result = await self.upload_file(file)
+        task_data: Dict[str, Any] = {
+            "type": "import_model",
+            "file": upload_result,
+        }
+        return await self.create_task(task_data)
+
+    async def animate_model(
+        self,
+        original_model_task_id: str,
+        animation: Union[Animation, List[Animation]],
+        out_format: Optional[Literal["glb", "fbx"]] = "glb",
+    ) -> str:
+        """
+        One-shot animation: automatically runs pre-rig check, rigging and retarget.
+
+        This is a convenience wrapper equivalent to:
+        ``check_riggable -> rig_model -> retarget_animation``.
+
+        Args:
+            original_model_task_id: Task ID of a completed model generation task.
+            animation: Preset animation(s) to apply.
+            out_format: Output format, "glb" or "fbx".
+
+        Returns:
+            The task ID.
+        """
+        task_data: Dict[str, Any] = {
+            "type": "animate_model",
+            "original_model_task_id": original_model_task_id,
+        }
+        if isinstance(animation, list):
+            task_data["animations"] = animation
+        else:
+            task_data["animation"] = animation
+
+        self._add_optional_params(
+            task_data,
+            passed_args=self._get_passed_args(),
+            additional_exclude={"animation", "original_model_task_id"},
+        )
+        return await self.create_task(task_data)
+
+    async def get_image_templates(self) -> List[Dict[str, Any]]:
+        """
+        Retrieve available image generation templates for ``generate_image(template=...)``.
+
+        Returns:
+            A list of template dicts, each containing at least a ``title`` field
+            that can be passed as the ``template`` parameter.
+        """
+        response = await self._impl._request("GET", "/task/image-templates")
+        return response.get("data", [])
 
     async def convert_model(
         self,
