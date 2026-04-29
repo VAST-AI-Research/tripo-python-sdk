@@ -87,7 +87,7 @@ class TaskOutput:
             rendered_image=data.get('rendered_image'),
             riggable=data.get('riggable'),
             rig_type=data.get('rig_type'),
-            image=data.get('image'),
+            image=data.get('generated_image') or data.get('image'),
             front_view_url=multiview.get('front_view_url'),
             left_view_url=multiview.get('left_view_url'),
             back_view_url=multiview.get('back_view_url'),
