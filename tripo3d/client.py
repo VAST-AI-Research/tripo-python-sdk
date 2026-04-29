@@ -17,37 +17,19 @@ from .client_impl import ClientImpl
 from .exceptions import TripoRequestError
 
 
-REGION_CONFIG = {
-    "ov": {
-        "base_url": "https://api.tripo3d.ai/v2/openapi",
-    },
-    "cn": {
-        "base_url": "https://api.tripo3d.com/v2/openapi",
-    },
-}
-
-
 class TripoClient:
     """Client for the Tripo 3D Generation API."""
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        region: Optional[Literal["ov", "cn"]] = None,
-        base_url: Optional[str] = None,
-        IS_GLOBAL: bool = True,
-    ):
+    # The base URL for the Tripo API as specified in the OpenAPI schema
+    BASE_URL = "https://api.tripo3d.ai/v2/openapi"
+
+    def __init__(self, api_key: Optional[str] = None, IS_GLOBAL: bool = True):
         """
         Initialize the Tripo API client.
 
         Args:
             api_key: The API key for authentication. If not provided, it will be read from the
                      TRIPO_API_KEY environment variable.
-            region: API region. "ov" for overseas (api.tripo3d.ai), "cn" for China mainland
-                    (api.tripo3d.com). Default is "ov". The old IS_GLOBAL=False is equivalent
-                    to region="cn".
-            base_url: Override the base URL directly. Takes precedence over region.
-            IS_GLOBAL: Deprecated. Use region="cn" instead of IS_GLOBAL=False.
 
         Raises:
             ValueError: If no API key is provided and the TRIPO_API_KEY environment variable is not set.
@@ -61,24 +43,10 @@ class TripoClient:
         if not self.api_key.startswith('tsk_'):
             raise ValueError("API key must start with 'tsk_'")
 
-        if region is None and not IS_GLOBAL:
-            warnings.warn(
-                "IS_GLOBAL is deprecated, use region='cn' instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            region = "cn"
-        self.region = region or "ov"
+        if not IS_GLOBAL:
+            self.BASE_URL = "https://api.tripo3d.com/v2/openapi"
 
-        if base_url:
-            self.base_url = base_url
-        else:
-            cfg = REGION_CONFIG.get(self.region)
-            if cfg is None:
-                raise ValueError(f"Unknown region: {self.region!r}. Use 'ov' or 'cn'.")
-            self.base_url = cfg["base_url"]
-
-        self._impl = ClientImpl(self.api_key, self.base_url)
+        self._impl = ClientImpl(self.api_key, self.BASE_URL)
 
 
     async def close(self) -> None:
@@ -112,7 +80,7 @@ class TripoClient:
                 )
                 # Create a new implementation with SSL disabled just for this download
                 from .client_impl import ClientImpl
-                ssl_disabled_impl = ClientImpl(self.api_key, self.base_url, verify_ssl=False)
+                ssl_disabled_impl = ClientImpl(self.api_key, self.BASE_URL, verify_ssl=False)
                 try:
                     await ssl_disabled_impl.download_file(url, output_path)
                 finally:
@@ -142,11 +110,7 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        headers = {}
-        if self.region == "cn":
-            headers["X-Tripo-Region"] = "rg2"
-
-        response = await self._impl._request("GET", f"/task/{task_id}", headers=headers)
+        response = await self._impl._request("GET", f"/task/{task_id}")
         return Task.from_dict(response["data"])
 
 
@@ -646,8 +610,7 @@ class TripoClient:
 
     async def multiview_to_model(
         self,
-        images: Optional[List[str]] = None,
-        original_task_id: Optional[str] = None,
+        images: List[str],
         model_version: Literal[
             "P1-20260311",
             "v3.1-20260211", "v3.0-20250812", "v2.5-20250123",
@@ -695,31 +658,27 @@ class TripoClient:
         Returns:
             The task ID.
         """
-        if images is None and original_task_id is None:
-            raise ValueError("Either images or original_task_id must be provided.")
+        tasks = []
+        for i, image in enumerate(images):
+            if image is not None:
+                tasks.append((i, self._image_to_file_content(image)))
+            else:
+                tasks.append((i, None))
 
-        task_data: Dict[str, Any] = {"type": "multiview_to_model"}
+        file_tokens = [{} for _ in range(len(images))]
+        for i, t in tasks:
+            if t is not None:
+                file_tokens[i] = await t
 
-        if original_task_id is not None:
-            task_data["original_task_id"] = original_task_id
-        else:
-            tasks = []
-            for i, image in enumerate(images):
-                if image is not None:
-                    tasks.append((i, self._image_to_file_content(image)))
-                else:
-                    tasks.append((i, None))
-
-            file_tokens = [{} for _ in range(len(images))]
-            for i, t in tasks:
-                if t is not None:
-                    file_tokens[i] = await t
-            task_data["files"] = file_tokens
+        task_data = {
+            "type": "multiview_to_model",
+            "files": file_tokens,
+        }
 
         self._add_optional_params(
             task_data,
             passed_args=self._get_passed_args(),
-            additional_exclude={"images", "original_task_id"},
+            additional_exclude={"images"},
             compress=lambda val: 'geometry' if val else None,
         )
 

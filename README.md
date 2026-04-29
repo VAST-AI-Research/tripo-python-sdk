@@ -14,7 +14,6 @@ The Tripo3d Python SDK is the official Python client library for the [Tripo 3D G
 - Mesh editing including mesh segmentation, mesh completion and smart lowpoly
 - Model conversion and stylization
 - Rigging and retarget
-- **China mainland region support** (`region="cn"`)
 - Asynchronous API support
 - Complete type hints
 
@@ -33,25 +32,22 @@ import asyncio
 from tripo3d import TripoClient
 
 async def main():
-    # Overseas users (default)
+    # Initialize client with API key
     client = TripoClient(api_key="your_api_key")
 
-    # China mainland users
-    client = TripoClient(api_key="your_api_key", region="cn")
-
-    # Or read API key from environment variable
+    # Or read from environment variable
     # export TRIPO_API_KEY=your_api_key
-    # client = TripoClient()                     # overseas
-    # client = TripoClient(region="cn")          # china mainland
+    # client = TripoClient()
 
+    # Use the client
+    # ...
+
+    # Close client connection
     await client.close()
 
+# Run async function
 asyncio.run(main())
 ```
-
-> **Region differences**: `region="ov"` uses `api.tripo3d.ai` and AWS S3 for uploads.
-> `region="cn"` uses `api.tripo3d.com` and Baidu BOS. STS upload, bucket names, and
-> available `generate_image` model versions are handled automatically.
 
 ### Text to 3D Model
 
