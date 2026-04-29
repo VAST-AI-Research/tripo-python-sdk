@@ -873,53 +873,6 @@ class TripoClient:
         }
         return await self.create_task(task_data)
 
-    async def animate_model(
-        self,
-        original_model_task_id: str,
-        animation: Union[Animation, List[Animation]],
-        out_format: Optional[Literal["glb", "fbx"]] = "glb",
-    ) -> str:
-        """
-        One-shot animation: automatically runs pre-rig check, rigging and retarget.
-
-        This is a convenience wrapper equivalent to:
-        ``check_riggable -> rig_model -> retarget_animation``.
-
-        Args:
-            original_model_task_id: Task ID of a completed model generation task.
-            animation: Preset animation(s) to apply.
-            out_format: Output format, "glb" or "fbx".
-
-        Returns:
-            The task ID.
-        """
-        task_data: Dict[str, Any] = {
-            "type": "animate_model",
-            "original_model_task_id": original_model_task_id,
-        }
-        if isinstance(animation, list):
-            task_data["animations"] = animation
-        else:
-            task_data["animation"] = animation
-
-        self._add_optional_params(
-            task_data,
-            passed_args=self._get_passed_args(),
-            additional_exclude={"animation", "original_model_task_id"},
-        )
-        return await self.create_task(task_data)
-
-    async def get_image_templates(self) -> List[Dict[str, Any]]:
-        """
-        Retrieve available image generation templates for ``generate_image(template=...)``.
-
-        Returns:
-            A list of template dicts, each containing at least a ``title`` field
-            that can be passed as the ``template`` parameter.
-        """
-        response = await self._impl._request("GET", "/task/image-templates")
-        return response.get("data", [])
-
     async def convert_model(
         self,
         original_model_task_id: str,
