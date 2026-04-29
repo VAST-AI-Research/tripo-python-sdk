@@ -62,6 +62,11 @@ class TripoClient:
             raise ValueError("API key must start with 'tsk_'")
 
         if region is None and not IS_GLOBAL:
+            warnings.warn(
+                "IS_GLOBAL is deprecated, use region='cn' instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             region = "cn"
         self.region = region or "ov"
 
@@ -137,10 +142,8 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        # Add region header for China mainland users
         headers = {}
-        from .geo_utils import get_china_mainland_status
-        if get_china_mainland_status():
+        if self.region == "cn":
             headers["X-Tripo-Region"] = "rg2"
 
         response = await self._impl._request("GET", f"/task/{task_id}", headers=headers)
@@ -268,21 +271,20 @@ class TripoClient:
             raise FileNotFoundError(f"Output directory not found: {output_dir}")
         result = {}
 
-        def get_extension(url: str) -> str:
-            # Remove query parameters
+        _IMAGE_FIELDS = {"rendered_image", "image", "front_view", "left_view", "back_view", "right_view"}
+
+        def get_extension(url: str, field_name: str) -> str:
             path = url.split('?')[0]
-            # Get the last path component
             filename = path.split('/')[-1]
-            # Get the extension, or default to .glb if none
             ext = os.path.splitext(filename)[1]
-            return ext if ext else '.glb'
+            if ext:
+                return ext
+            return '.jpg' if field_name in _IMAGE_FIELDS else '.glb'
 
         async def download_file(url: str, filename: str) -> Optional[str]:
             if not url:
                 return None
-
             output_path = os.path.join(output_dir, filename)
-            # Use the download method with SSL retry
             await self._download_with_ssl_retry(url, output_path)
             return output_path
 
@@ -302,7 +304,7 @@ class TripoClient:
 
         for field_name, url, suffix in output_fields:
             if url:
-                ext = get_extension(url)
+                ext = get_extension(url, field_name)
                 download_tasks.append((field_name, url, f"{task.task_id}{suffix}{ext}"))
 
         # Download all files concurrently
@@ -541,6 +543,8 @@ class TripoClient:
             compress: Whether to compress the model.
             generate_parts: Whether to generate parts.
             smart_low_poly: Whether to use smart low poly.
+            export_uv: Whether to perform UV unwrapping during generation. Default True.
+                       Set False to speed up generation; UV is then handled at texturing stage.
         Returns:
             The task ID.
 
@@ -614,6 +618,8 @@ class TripoClient:
             compress: Whether to compress the model.
             generate_parts: Whether to generate parts.
             smart_low_poly: Whether to use smart low poly.
+            enable_image_autofix: Whether to auto-optimize input image quality. Default False.
+            export_uv: Whether to perform UV unwrapping during generation. Default True.
         Returns:
             The task ID.
 
@@ -788,7 +794,9 @@ class TripoClient:
             task_data["file"] = await self._image_to_file_content(file)
 
         if files is not None:
-            task_data["files"] = [await self._image_to_file_content(f) for f in files]
+            task_data["files"] = list(
+                await asyncio.gather(*[self._image_to_file_content(f) for f in files])
+            )
 
         self._add_optional_params(
             task_data,
