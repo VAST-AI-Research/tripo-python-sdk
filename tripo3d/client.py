@@ -8,6 +8,7 @@ import os
 import asyncio
 import time
 import warnings
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Union, Literal
 import inspect
 import re
@@ -22,8 +23,14 @@ class TripoClient:
 
     # The base URL for the Tripo API as specified in the OpenAPI schema
     BASE_URL = "https://api.tripo3d.ai/v2/openapi"
+    SEGMENT_V2_MODEL = "v2.0-20260430"
 
-    def __init__(self, api_key: Optional[str] = None, IS_GLOBAL: bool = True):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        IS_GLOBAL: bool = True,
+        v3_base_url: Optional[str] = None,
+    ):
         """
         Initialize the Tripo API client.
 
@@ -45,13 +52,19 @@ class TripoClient:
 
         if not IS_GLOBAL:
             self.BASE_URL = "https://api.tripo3d.com/v2/openapi"
+            default_v3_base_url = "https://openapi.tripo3d.com"
+        else:
+            default_v3_base_url = "https://openapi.tripo3d.ai"
 
+        self._v3_base_url = v3_base_url or default_v3_base_url
         self._impl = ClientImpl(self.api_key, self.BASE_URL)
+        self._v3_impl = ClientImpl(self.api_key, self._v3_base_url)
 
 
     async def close(self) -> None:
         """Close any open connections."""
         await self._impl.close()
+        await self._v3_impl.close()
 
     def _is_ssl_error(self, error: Exception) -> bool:
         """Check if the error is an SSL certificate verification error."""
@@ -88,6 +101,71 @@ class TripoClient:
             else:
                 raise
 
+    async def _v3_request(
+        self,
+        method: str,
+        path: str,
+        json_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """apiv3 dedicated channel (segment v2 only)."""
+        return await self._v3_impl._request(method, path, json_data=json_data)
+
+    async def _v3_upload_file(self, file_path: str) -> str:
+        """Upload via apiv3 POST /v3/files and return file_<uuid> token."""
+        return await self._v3_impl.upload_multipart(
+            "/v3/files",
+            file_path,
+            field_name="file",
+            response_token_key="file_token",
+        )
+
+    async def _v3_get_task(self, task_id: str) -> Dict[str, Any]:
+        """Query task via apiv3 GET /v3/tasks/{id}."""
+        response = await self._v3_request("GET", f"/v3/tasks/{task_id}")
+        return response["data"]
+
+    @staticmethod
+    def _normalize_v3_task_data(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Map apiv3 task payload into v2 Task.from_dict shape."""
+        output = dict(data.get("output") or {})
+        normalized_output = dict(output)
+        url_key_map = {
+            "model_url": "model",
+            "base_model_url": "base_model",
+            "pbr_model_url": "pbr_model",
+            "rendered_image_url": "rendered_image",
+        }
+        for src_key, dst_key in url_key_map.items():
+            if src_key in output and dst_key not in normalized_output:
+                normalized_output[dst_key] = output[src_key]
+
+        create_time = data.get("create_time")
+        if create_time is None and data.get("created_at"):
+            created_at = data["created_at"]
+            if isinstance(created_at, str):
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                create_time = int(dt.timestamp())
+            elif isinstance(created_at, (int, float)):
+                create_time = int(created_at)
+
+        progress = data.get("progress")
+        if progress is None:
+            progress = 0
+
+        normalized = {
+            "task_id": data["task_id"],
+            "type": data["type"],
+            "status": data["status"],
+            "input": data.get("input") or {},
+            "output": normalized_output,
+            "progress": progress,
+            "create_time": create_time or 0,
+        }
+        for key in ("running_left_time", "queuing_num", "error_code", "error_msg"):
+            if key in data:
+                normalized[key] = data[key]
+        return normalized
+
     async def __aenter__(self) -> 'TripoClient':
         """Enter the async context manager."""
         return self
@@ -96,12 +174,13 @@ class TripoClient:
         """Exit the async context manager."""
         await self.close()
 
-    async def get_task(self, task_id: str) -> Task:
+    async def get_task(self, task_id: str, *, use_v3: bool = False) -> Task:
         """
         Get the status of a task.
 
         Args:
             task_id: The ID of the task to get.
+            use_v3: When True, query apiv3 GET /v3/tasks/{id} (required for segment v2 tasks).
 
         Returns:
             The task data.
@@ -110,8 +189,12 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
-        response = await self._impl._request("GET", f"/task/{task_id}")
-        return Task.from_dict(response["data"])
+        if use_v3:
+            data = await self._v3_get_task(task_id)
+        else:
+            response = await self._impl._request("GET", f"/task/{task_id}")
+            data = response["data"]
+        return Task.from_dict(self._normalize_v3_task_data(data) if use_v3 else data)
 
 
     async def create_task(self, task_data: Dict[str, Any]) -> str:
@@ -150,7 +233,8 @@ class TripoClient:
         task_id: str,
         polling_interval: float = 2.0,
         timeout: Optional[float] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        use_v3: bool = False,
     ) -> Task:
         """
         Wait for a task to complete.
@@ -160,6 +244,8 @@ class TripoClient:
             polling_interval: The interval in seconds to poll the task status.
             timeout: The maximum time in seconds to wait for the task to complete.
                     If None, wait indefinitely.
+            verbose: Print progress updates while polling.
+            use_v3: When True, poll apiv3 GET /v3/tasks/{id} (required for segment v2 tasks).
 
         Returns:
             The task data.
@@ -179,7 +265,7 @@ class TripoClient:
                     raise asyncio.TimeoutError(f"Task {task_id} did not complete within {timeout} seconds")
 
             # Get the task status
-            task = await self.get_task(task_id)
+            task = await self.get_task(task_id, use_v3=use_v3)
 
             # If the task is done, return it
             if task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.BANNED, TaskStatus.EXPIRED):
@@ -1154,7 +1240,10 @@ class TripoClient:
     async def mesh_segmentation(
         self,
         original_model_task_id: str,
-        model_version: Optional[Literal["v1.0-20250506"]] = "v1.0-20250506",
+        model_version: Optional[Literal["v1.0-20250506", "v2.0-20260430"]] = "v1.0-20250506",
+        segmentation_granularity: Optional[str] = None,
+        ref_image: Optional[str] = None,
+        split_by_connectivity: Optional[bool] = None,
     ) -> str:
         """
         Segment a 3D model.
@@ -1162,6 +1251,9 @@ class TripoClient:
         Args:
             original_model_task_id: The task ID of the original model.
             model_version: The model version to use.
+            segmentation_granularity: Granularity for segment v2 (simple/balanced/detailed).
+            ref_image: Local file path or apiv3 file_<uuid> token (segment v2 only).
+            split_by_connectivity: Whether to split by connectivity (segment v2 only).
         Returns:
             The task ID.
 
@@ -1169,6 +1261,23 @@ class TripoClient:
             TripoRequestError: If the request fails.
             TripoAPIError: If the API returns an error.
         """
+        if model_version == self.SEGMENT_V2_MODEL:
+            body: Dict[str, Any] = {
+                "type": "mesh_segmentation",
+                "model": model_version,
+                "input": original_model_task_id,
+            }
+            if segmentation_granularity:
+                body["segmentation_granularity"] = segmentation_granularity
+            if ref_image:
+                if os.path.isfile(ref_image):
+                    ref_image = await self._v3_upload_file(ref_image)
+                body["ref_image"] = ref_image
+            if split_by_connectivity is not None:
+                body["split_by_connectivity"] = split_by_connectivity
+            response = await self._v3_request("POST", "/v3/mesh/segment", json_data=body)
+            return response["data"]["task_id"]
+
         task_data = {
             "type": "mesh_segmentation",
             "original_model_task_id": original_model_task_id,

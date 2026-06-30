@@ -34,6 +34,16 @@ class BaseClientImpl:
         """Upload a file to the API."""
         raise NotImplementedError("Subclasses must implement upload_file")
 
+    async def upload_multipart(
+        self,
+        path: str,
+        file_path: str,
+        field_name: str = "file",
+        response_token_key: str = "file_token",
+    ) -> str:
+        """Upload a file via multipart POST and return a token from response data."""
+        raise NotImplementedError("Subclasses must implement upload_multipart")
+
     async def download_file(self, url: str, output_path: str) -> None:
         """Download a file from a URL and save it to a local path."""
         raise NotImplementedError("Subclasses must implement download_file")

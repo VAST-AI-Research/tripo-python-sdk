@@ -130,6 +130,46 @@ class AioHttpClientImpl(BaseClientImpl):
         except IOError as e:
             raise TripoRequestError(status_code=0, message=f"File error: {str(e)}")
 
+    async def upload_multipart(
+        self,
+        path: str,
+        file_path: str,
+        field_name: str = "file",
+        response_token_key: str = "file_token",
+    ) -> str:
+        """Upload a file via multipart POST and return a token from response data."""
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        session = await self._ensure_session()
+        url = self._url(path)
+
+        try:
+            with open(file_path, "rb") as f:
+                form_data = aiohttp.FormData()
+                form_data.add_field(field_name, f, filename=os.path.basename(file_path))
+
+                async with session.post(url, data=form_data) as response:
+                    response_data = await response.json()
+
+                    if response.status >= 400:
+                        if "code" in response_data and "message" in response_data:
+                            raise TripoAPIError(
+                                code=response_data["code"],
+                                message=response_data["message"],
+                                suggestion=response_data.get("suggestion")
+                            )
+                        raise TripoRequestError(
+                            status_code=response.status,
+                            message=f"Upload failed: {response.reason}"
+                        )
+
+                    return response_data["data"][response_token_key]
+        except aiohttp.ClientError as e:
+            raise TripoRequestError(status_code=0, message=f"Upload error: {str(e)}")
+        except IOError as e:
+            raise TripoRequestError(status_code=0, message=f"File error: {str(e)}")
+
     async def download_file(self, url: str, output_path: str) -> None:
         """Download a file using aiohttp."""
         session = await self._ensure_session()

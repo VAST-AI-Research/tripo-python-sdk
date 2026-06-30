@@ -684,7 +684,7 @@ class TestTripoClient:
     @pytest.mark.asyncio
     async def test_mesh_segmentation(self, client):
         """Test mesh_segmentation passes optional params correctly."""
-        with patch.object(client, 'create_task', return_value="task-123"):
+        with patch.object(client, 'create_task', return_value="task-123") as mock_create:
             task_id = await client.mesh_segmentation(
                 original_model_task_id="task-original",
             )
@@ -695,7 +695,83 @@ class TestTripoClient:
                 "type": "mesh_segmentation",
                 "original_model_task_id": "task-original",
             }
-            client.create_task.assert_called_once_with(expected_data)
+            mock_create.assert_called_once_with(expected_data)
+
+    @pytest.mark.asyncio
+    async def test_mesh_segmentation_v2_uses_apiv3(self, client):
+        """Test segment v2 routes through apiv3 instead of v2 create_task."""
+        with patch.object(client, '_v3_request', return_value={"data": {"task_id": "seg-v2-1"}}) as mock_v3:
+            with patch.object(client, 'create_task') as mock_create:
+                task_id = await client.mesh_segmentation(
+                    original_model_task_id="task-original",
+                    model_version="v2.0-20260430",
+                    segmentation_granularity="detailed",
+                    split_by_connectivity=False,
+                    ref_image="file_abc123",
+                )
+
+                assert task_id == "seg-v2-1"
+                mock_create.assert_not_called()
+                mock_v3.assert_called_once_with(
+                    "POST",
+                    "/v3/mesh/segment",
+                    json_data={
+                        "type": "mesh_segmentation",
+                        "model": "v2.0-20260430",
+                        "input": "task-original",
+                        "segmentation_granularity": "detailed",
+                        "ref_image": "file_abc123",
+                        "split_by_connectivity": False,
+                    },
+                )
+
+    @pytest.mark.asyncio
+    async def test_mesh_segmentation_v2_uploads_ref_image(self, client):
+        """Test segment v2 uploads local ref_image via apiv3 /v3/files."""
+        with patch.object(client, '_v3_upload_file', return_value="file_uploaded") as mock_upload:
+            with patch.object(client, '_v3_request', return_value={"data": {"task_id": "seg-v2-2"}}):
+                with patch('os.path.isfile', return_value=True):
+                    task_id = await client.mesh_segmentation(
+                        original_model_task_id="task-original",
+                        model_version="v2.0-20260430",
+                        ref_image="/tmp/ref.png",
+                    )
+
+                assert task_id == "seg-v2-2"
+                mock_upload.assert_called_once_with("/tmp/ref.png")
+
+    def test_normalize_v3_task_data_maps_output_urls(self, client):
+        """Test apiv3 task payload normalization for Task.from_dict."""
+        normalized = client._normalize_v3_task_data({
+            "task_id": "abc",
+            "type": "mesh_segmentation",
+            "status": "success",
+            "progress": 100,
+            "created_at": "2026-06-30T12:00:00Z",
+            "input": {},
+            "output": {"model_url": "https://cdn.example/model.glb"},
+        })
+        assert normalized["output"]["model"] == "https://cdn.example/model.glb"
+        assert normalized["create_time"] > 0
+
+    @pytest.mark.asyncio
+    async def test_get_task_use_v3(self, client):
+        """Test get_task(use_v3=True) queries apiv3 endpoint."""
+        v3_payload = {
+            "task_id": "abc",
+            "type": "mesh_segmentation",
+            "status": "success",
+            "progress": 100,
+            "created_at": "2026-06-30T12:00:00Z",
+            "input": {},
+            "output": {"model_url": "https://cdn.example/model.glb"},
+        }
+        with patch.object(client, '_v3_get_task', return_value=v3_payload) as mock_get:
+            task = await client.get_task("abc", use_v3=True)
+
+            mock_get.assert_called_once_with("abc")
+            assert task.task_id == "abc"
+            assert task.output.model == "https://cdn.example/model.glb"
 
     @pytest.mark.asyncio
     async def test_polling_backoff_capped(self, client):

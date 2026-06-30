@@ -225,6 +225,27 @@ class LegacyClientImpl(BaseClientImpl):
         response = await self._request('POST', '/upload', data=body, headers=headers)
         return response['data']['image_token']
 
+    async def upload_multipart(
+        self,
+        path: str,
+        file_path: str,
+        field_name: str = "file",
+        response_token_key: str = "file_token",
+    ) -> str:
+        """Upload a file via multipart POST and return a token from response data."""
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        form = MultipartFormData()
+        with open(file_path, 'rb') as f:
+            form.add_field(field_name, f.read(), os.path.basename(file_path))
+
+        body, content_type = form.build()
+        headers = {'Content-Type': content_type}
+
+        response = await self._request('POST', path, data=body, headers=headers)
+        return response['data'][response_token_key]
+
     async def download_file(self, url: str, output_path: str) -> None:
         """Download a file using raw sockets."""
         parsed_url = urlparse(url)
