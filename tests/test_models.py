@@ -67,15 +67,14 @@ class TestTaskOutput:
 
     def test_new_v3_fields_and_urls(self):
         output = TaskOutput.from_dict({
-            "model_url": "m", "uv_render_url": "uv", "depth_image_url": "d", "motion_url": "mo",
+            "model_url": "m", "uv_render_url": "uv", "depth_image_url": "d",
             "rendered_video_url": "v", "riggable": False,
         })
         assert output.uv_render_url == "uv"
         assert output.depth_image_url == "d"
-        assert output.motion_url == "mo"
         assert output.rendered_video_url == "v"
         assert output.urls == {"model_url": "m", "uv_render_url": "uv", "depth_image_url": "d",
-                               "motion_url": "mo", "rendered_video_url": "v"}
+                               "rendered_video_url": "v"}
 
     def test_none_and_non_dict(self):
         assert TaskOutput.from_dict(None).model is None

@@ -122,7 +122,6 @@ class TaskOutput:
     generated_image_url: Optional[str] = None
     depth_image_url: Optional[str] = None
     uv_render_url: Optional[str] = None
-    motion_url: Optional[str] = None
     rendered_video_url: Optional[str] = None
     topology: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -162,7 +161,6 @@ class TaskOutput:
             generated_image_url=image,
             depth_image_url=data.get('depth_image_url'),
             uv_render_url=data.get('uv_render_url'),
-            motion_url=data.get('motion_url'),
             rendered_video_url=data.get('rendered_video_url'),
             topology=topology,
             raw=dict(data),

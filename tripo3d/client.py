@@ -61,7 +61,6 @@ _CREATE_TASK_ROUTES = {
     "animate_prerigcheck": "/v3/animations/rig-check",
     "animate_rig": "/v3/animations/rig",
     "animate_retarget": "/v3/animations/retarget",
-    "text_to_motion": "/v3/animations/text-to-motion",
     "mesh_segmentation": "/v3/mesh/segment",
     "mesh_completion": "/v3/mesh/complete",
     "highpoly_to_lowpoly": "/v3/mesh/decimate",
@@ -396,7 +395,6 @@ class TripoClient:
             ("right_view", out.right_view_url, "_right"),
             ("uv_render", out.uv_render_url, "_uv_render"),
             ("depth_image", out.depth_image_url, "_depth"),
-            ("motion", out.motion_url, "_motion"),
             ("rendered_video", out.rendered_video_url, "_video"),
         ]
 
@@ -960,29 +958,6 @@ class TripoClient:
         if isinstance(animation, (list, tuple)):
             return await self.retarget(original_model_task_id, animations=animation, out_format=out, **extra)
         return await self.retarget(original_model_task_id, animation=animation, out_format=out, **extra)
-
-    async def text_to_motion(
-        self,
-        segments: List[Dict[str, Any]],
-        model_version: Optional[str] = None,
-        **kwargs: Any,
-    ) -> str:
-        """
-        Generate a motion clip from text (``POST /v3/animations/text-to-motion``).
-
-        Args:
-            segments: 1-10 items of ``{"prompt": str, "frames": 30-300}`` (optional ``waypoints``).
-            model_version: Only ``default`` exists today; None lets the server choose.
-
-        The result's ``motion`` name can be passed to :meth:`retarget` as ``animation``.
-        """
-        if not segments:
-            raise TripoValidationError("segments must not be empty")
-        payload: Dict[str, Any] = {"segments": list(segments)}
-        if model_version is not None:
-            payload["model"] = model_version
-        self._merge_extra(payload, kwargs)
-        return await self._submit("/v3/animations/text-to-motion", payload)
 
     # ------------------------------------------------------------------
     # Mesh

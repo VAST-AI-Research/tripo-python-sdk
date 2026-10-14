@@ -65,7 +65,6 @@ parameters can be used before the SDK names them, e.g.
 | `rig_check` / `check_riggable` | `POST /v3/animations/rig-check` |
 | `rig` / `rig_model` | `POST /v3/animations/rig` |
 | `retarget` / `retarget_animation` | `POST /v3/animations/retarget` |
-| `text_to_motion` | `POST /v3/animations/text-to-motion` |
 | `mesh_segment` / `mesh_segmentation` | `POST /v3/mesh/segment` |
 | `mesh_complete` / `mesh_completion` | `POST /v3/mesh/complete` |
 | `mesh_decimate` / `smart_lowpoly` | `POST /v3/mesh/decimate` |
@@ -113,7 +112,7 @@ files = await client.download_task_models(task, "./output")
 
 apiv3 returns a single `model_url`. It is downloaded once; `pbr_model` refers to the same file.
 Other outputs that are present are downloaded too: `rendered_image`, `image`,
-`front_view`/`left_view`/`back_view`/`right_view`, `uv_render`, `depth_image`, `motion`,
+`front_view`/`left_view`/`back_view`/`right_view`, `uv_render`, `depth_image`,
 `rendered_video`. A failed download maps to `None`. Result URLs are signed and expire, so
 download promptly. No API key is sent to the download host.
 
@@ -293,14 +292,6 @@ task_id = await client.retarget(rig_task_id, animations=["preset:walk", "preset:
 
 At most 5 animations per task. `bake_animation` is accepted but ignored (apiv3 no longer uses it).
 
-### text_to_motion
-
-```python
-task_id = await client.text_to_motion([{"prompt": "walk forward", "frames": 90}])
-```
-
-1–10 segments, 30–300 frames each. Use the resulting motion name as `animation` in `retarget`.
-
 ## Mesh
 
 ```python
@@ -340,7 +331,7 @@ task_id = await client.mesh_uv(original_model_task_id)
 
 `model` / `pbr_model` / `model_url` (same URL), `base_model`, `rendered_image`, `image`,
 `front_view_url`, `left_view_url`, `back_view_url`, `right_view_url`, `riggable`, `rig_type`,
-`topology`, `uv_render_url`, `depth_image_url`, `motion_url`, `rendered_video_url`, `raw`, and
+`topology`, `uv_render_url`, `depth_image_url`, `rendered_video_url`, `raw`, and
 `urls` (every `*_url` field).
 
 ### Enums

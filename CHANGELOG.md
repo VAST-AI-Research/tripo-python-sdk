@@ -13,7 +13,7 @@ items are removed only in 2.0.0.
 - `upload_file` uses `POST /v3/files` (presigned PUT above 50 MB) and always returns
   `{"file_token": ...}`. `boto3` is no longer needed; the `s3` extra is kept empty.
 - `download_task_models` downloads the single apiv3 model once; `pbr_model` maps to the same
-  file. It also downloads `uv_render`, `depth_image`, `motion` and `rendered_video` when present.
+  file. It also downloads `uv_render`, `depth_image` and `rendered_video` when present.
 - Rig model `v2.0-20250506` is sent as `v2.5-20260210`, as the v2 API did.
 - `smart_lowpoly` / `mesh_decimate` send the apiv3 names `v1.0` / `v2.0` / `v3.0`; the full names
   `P-v1.0-20250506`, `P-v2.0-20251225` (the ComfyUI default), `P-v2.0-20251226` and `P-v3.0-20260909`
@@ -27,7 +27,7 @@ items are removed only in 2.0.0.
 
 ### Added
 
-- `mesh_uv` (Smart UV), `text_to_motion`, `image_to_depth`, `image_to_splat`,
+- `mesh_uv` (Smart UV), `image_to_depth`, `image_to_splat`,
   `list_tasks` / `get_tasks`, `get_usage`, `presign_upload`, `download_file`.
 - apiv3-style methods: `image_to_image`, `image_to_multiview`, `edit_multiview`, `rig_check`,
   `rig`, `retarget`, `mesh_segment`, `mesh_complete`, `mesh_decimate`.

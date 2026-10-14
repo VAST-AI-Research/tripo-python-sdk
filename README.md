@@ -18,7 +18,7 @@ The Tripo3d Python SDK is the official Python client library for the [Tripo 3D G
 - **External model import** (GLB / OBJ / FBX / STL)
 - Mesh editing including mesh segmentation, mesh completion, smart lowpoly and **Smart UV** (`mesh_uv`)
 - Model conversion
-- Rigging (v1.0 / v2.5 / v3.0), retarget and **text to motion**
+- Rigging (v1.0 / v2.5 / v3.0) and retarget
 - Image to depth and image to Gaussian splat
 - Asynchronous API support
 - Complete type hints

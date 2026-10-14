@@ -306,13 +306,11 @@ class TestAnimation:
             await client.retarget(TASK_ID)
 
     @pytest.mark.asyncio
-    async def test_text_to_motion(self, client):
-        segments = [{"prompt": "walk", "frames": 60}]
-        await client.text_to_motion(segments, render_video=True)
-        assert last_call(client)[1:3] == ("/v3/animations/text-to-motion",
-                                          {"segments": segments, "render_video": True})
+    async def test_text_to_motion_is_not_offered(self, client):
+        assert not hasattr(client, "text_to_motion")
         with pytest.raises(TripoValidationError):
-            await client.text_to_motion([])
+            await client.create_task({"type": "text_to_motion", "segments": [{"prompt": "walk", "frames": 60}]})
+        assert client._http.calls == []
 
 
 class TestMesh:
