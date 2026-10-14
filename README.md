@@ -2,6 +2,11 @@
 
 The Tripo3d Python SDK is the official Python client library for the [Tripo 3D Generation API](https://tripo3d.ai/). With this SDK, you can easily generate high-quality 3D models.
 
+> **1.0.0 uses Tripo apiv3.** The v2 API is shut down on 2026-10-31 and 0.x releases stop
+> working then. 1.x keeps the 0.x method names and parameters, so upgrading is usually just
+> `pip install -U "tripo3d>=1.0.0,<2.0.0"`. See [CHANGELOG.md](CHANGELOG.md) and
+> [Migrating from 0.x](docs/API.md#migrating-from-0x).
+
 ## Features
 
 - Text-to-3D model generation
@@ -11,17 +16,22 @@ The Tripo3d Python SDK is the official Python client library for the [Tripo 3D G
 - **Multiview image generation and editing**
 - **One-shot model animation** (auto rig + retarget)
 - **External model import** (GLB / OBJ / FBX / STL)
-- Mesh editing including mesh segmentation, mesh completion and smart lowpoly
-- Model conversion and stylization
-- Rigging and retarget
+- Mesh editing including mesh segmentation, mesh completion, smart lowpoly and **Smart UV** (`mesh_uv`)
+- Model conversion
+- Rigging (v1.0 / v2.5 / v3.0), retarget and **text to motion**
+- Image to depth and image to Gaussian splat
 - Asynchronous API support
 - Complete type hints
+
+Refine and stylize are no longer supported: `refine_model` / `stylize_model` raise an error and send no request.
 
 ## Installation
 
 ```bash
-pip install tripo3d
+pip install "tripo3d>=1.0.0,<2.0.0"
 ```
+
+China mainland accounts use `TripoClient(IS_GLOBAL=False)` (`https://openapi.tripo3d.com`).
 
 ## Quick Start
 
@@ -126,9 +136,9 @@ async def multiview_to_model_example():
         task_id = await client.multiview_to_model(
             images=[
                 "path/to/front.jpg",   # Front view (required)
-                "path/to/back.jpg",    # Back view (optional)
-                "path/to/left.jpg",    # Left view (optional)
-                "path/to/right.jpg"    # Right view (optional)
+                "path/to/left.jpg",    # Left view (optional, or None)
+                "path/to/back.jpg",    # Back view (optional, or None)
+                "path/to/right.jpg"    # Right view (optional, or None)
             ],
         )
 
@@ -164,6 +174,22 @@ async def check_balance():
         print(f"Frozen amount: {balance.frozen}")
 
 asyncio.run(check_balance())
+```
+
+### Smart UV
+
+```python
+import asyncio
+from tripo3d import TripoClient, TaskStatus
+
+async def smart_uv(model_task_id):
+    async with TripoClient() as client:
+        task = await client.wait_for_task(await client.mesh_uv(model_task_id))
+        if task.status == TaskStatus.SUCCESS:
+            files = await client.download_task_models(task, "./output")
+            print(files["model"], files.get("uv_render"))
+
+asyncio.run(smart_uv("<task_id of a generated or imported model>"))
 ```
 
 ## Advanced Usage

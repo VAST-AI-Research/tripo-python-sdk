@@ -1,892 +1,376 @@
-# Tripo API Reference
+# Tripo API Reference (tripo3d 1.x, apiv3)
+
+`tripo3d` 1.x talks only to the Tripo **apiv3** API. The v2 API (`api.tripo3d.ai/v2/openapi`)
+is shut down on 2026-10-31; 0.x releases stop working at that point.
+
+Method names, parameter names and return types of 0.x are unchanged, so most code only needs
+`pip install -U "tripo3d>=1.0.0,<2.0.0"`. See [Migrating from 0.x](#migrating-from-0x).
 
 ## TripoClient
-
-The `TripoClient` class is the main entry point for interacting with the Tripo API.
 
 ```python
 from tripo3d import TripoClient
 
-# Initialize with API key
-client = TripoClient(api_key="your_api_key")
-
-# Or use environment variable
-# export TRIPO_API_KEY=your_api_key
-client = TripoClient()
+client = TripoClient(api_key="tsk_...")            # global: https://openapi.tripo3d.ai
+client = TripoClient(api_key="tsk_...", IS_GLOBAL=False)  # China: https://openapi.tripo3d.com
+client = TripoClient()                              # reads TRIPO_API_KEY
 ```
 
-### Context Manager
+| Argument | Default | Description |
+| --- | --- | --- |
+| `api_key` | `TRIPO_API_KEY` | Must start with `tsk_`, otherwise `ValueError` |
+| `IS_GLOBAL` | `True` | `False` selects the China endpoint |
+| `v3_base_url` | `None` | Override the endpoint (e.g. staging) |
+| `verify_ssl` | `True` | Verify TLS for API calls |
 
-The `TripoClient` can be used as an async context manager to automatically close the connection when done:
+All methods are `async`. Use `async with TripoClient() as client:` or call `await client.close()`.
+
+Every task-creating method returns the **task ID** (`str`). Pass it to `wait_for_task`, then use
+the returned `Task`. Downstream methods take that task ID as their source model.
+
+### Inputs
+
+Image and model inputs accept any of:
+
+| Value | Example | What the SDK does |
+| --- | --- | --- |
+| Local path | `"./cat.png"` | Uploads it (see `upload_file`) and sends the `file_token` |
+| URL | `"https://.../cat.png"` | Sent as-is; the API fetches it |
+| `file_token` | `"file_3f2c..."` | Sent as-is |
+| Task ID | `"6ffdb041-55c6-..."` | Sent as-is; the API reuses that task's output |
+
+A string that looks like a path but does not exist raises `FileNotFoundError`.
+
+Methods accept extra keyword arguments that are forwarded to the API unchanged, so new API
+parameters can be used before the SDK names them, e.g.
+`text_to_model(prompt, model_version="v3.1-20260211", export_orientation="-y")`.
+
+## Route map
+
+| Method | Route |
+| --- | --- |
+| `text_to_model` | `POST /v3/generation/text-to-model` |
+| `image_to_model` | `POST /v3/generation/image-to-model` |
+| `multiview_to_model` | `POST /v3/generation/multiview-to-model` |
+| `text_to_image` | `POST /v3/generation/text-to-image` |
+| `image_to_image` / `generate_image` | `POST /v3/generation/image-to-image` |
+| `image_to_multiview` / `generate_multiview_image` | `POST /v3/generation/image-to-multiview` |
+| `edit_multiview` / `edit_multiview_image` | `POST /v3/generation/edit-multiview` |
+| `image_to_splat` | `POST /v3/generation/image-to-splat` |
+| `image_to_depth` | `POST /v3/generation/image-to-depth` |
+| `texture_model` | `POST /v3/models/texture` |
+| `convert_model` | `POST /v3/models/convert` |
+| `import_model` | `POST /v3/models/import` |
+| `refine_model`, `stylize_model` | Removed — raise immediately, no request is sent |
+| `rig_check` / `check_riggable` | `POST /v3/animations/rig-check` |
+| `rig` / `rig_model` | `POST /v3/animations/rig` |
+| `retarget` / `retarget_animation` | `POST /v3/animations/retarget` |
+| `text_to_motion` | `POST /v3/animations/text-to-motion` |
+| `mesh_segment` / `mesh_segmentation` | `POST /v3/mesh/segment` |
+| `mesh_complete` / `mesh_completion` | `POST /v3/mesh/complete` |
+| `mesh_decimate` / `smart_lowpoly` | `POST /v3/mesh/decimate` |
+| `mesh_uv` | `POST /v3/mesh/uv` |
+| `get_task` / `wait_for_task` | `GET /v3/tasks/{task_id}` |
+| `list_tasks` / `get_tasks` | `POST /v3/tasks/list` |
+| `upload_file` | `POST /v3/files` or `POST /v3/files/presign` + PUT |
+| `presign_upload` | `POST /v3/files/presign` |
+| `get_balance` | `GET /v3/account/balance` |
+| `get_usage` | `GET /v3/account/usage` |
+| `create_task` | route chosen by the payload `type` |
+
+Where two names are listed, the first takes apiv3 field names (`input`, `model`) and the second
+keeps the 0.x signature.
+
+## Tasks and files
+
+### wait_for_task
 
 ```python
-async with TripoClient() as client:
-    # Use the client
-    # ...
+task = await client.wait_for_task(task_id, polling_interval=2.0, timeout=None, verbose=False)
 ```
 
-### Methods
+Polls until the task is `success`, `failed`, `cancelled`, `banned` or `expired`. The interval
+starts at `polling_interval` and doubles up to 30 s. `timeout` raises `TripoPollTimeoutError`,
+which is an `asyncio.TimeoutError`. A failed task is returned, not raised: check `task.status`,
+`task.error_code` and `task.error_msg`.
 
-#### Common Methods
+`use_v3=` is still accepted and ignored.
 
-##### upload_file
+### get_task / list_tasks
 
 ```python
-async def upload_file(self, file_path: str) -> str
+task = await client.get_task(task_id)
+batch = await client.list_tasks([id1, id2])   # BatchTaskResult(tasks={id: Task}, missed=[...])
 ```
 
-Upload a file to the API.
-
-**Parameters:**
-- `file_path`: The path to the file to upload.
-
-**Returns:**
-- The file token as a string.
-
-**Example:**
+### download_task_models
 
 ```python
-file_token = await client.upload_file("path/to/image.jpg")
+files = await client.download_task_models(task, "./output")
+# {"model": "./output/<id>_model.glb", "pbr_model": "./output/<id>_model.glb",
+#  "rendered_image": "./output/<id>_rendered.webp"}
 ```
 
-##### create_task
+apiv3 returns a single `model_url`. It is downloaded once; `pbr_model` refers to the same file.
+Other outputs that are present are downloaded too: `rendered_image`, `image`,
+`front_view`/`left_view`/`back_view`/`right_view`, `uv_render`, `depth_image`, `motion`,
+`rendered_video`. A failed download maps to `None`. Result URLs are signed and expire, so
+download promptly. No API key is sent to the download host.
+
+`download_rendered_image(task, output_dir, filename=None)` downloads only the preview image.
+`download_file(url, path)` downloads any result URL.
+
+### upload_file
 
 ```python
-async def create_task(self, task_data: Dict[str, Any]) -> str
+{"file_token": "file_..."} = await client.upload_file("./model.glb")
 ```
 
-Create a task with custom parameters.
+Files up to 50 MB go through `POST /v3/files`; larger files use a presigned PUT. The API limit
+is 150 MB. `presign_upload(format)` returns a `PresignedUpload(file_token, upload_url,
+expires_in)` if you want to upload yourself.
 
-**Parameters:**
-- `task_data`: Dictionary containing the task data.
-
-**Returns:**
-- The task ID as a string.
-
-**Example:**
+### get_balance / get_usage
 
 ```python
-task_id = await client.create_task({
-    "type": "text_to_model",
-    "prompt": "A shiny red apple",
-    "texture": True
-})
+balance = await client.get_balance()          # Balance(balance, frozen)
+usage = await client.get_usage(limit=50, offset=0)   # [TaskUsageItem(task_id, type, status, created_at, credits_consumed)]
 ```
 
-##### get_task
+## Generation
 
-```python
-async def get_task(self, task_id: str) -> Task
-```
-
-Get the status and details of a task.
-
-**Parameters:**
-- `task_id`: The ID of the task to get.
-
-**Returns:**
-- A `Task` object containing task details.
-
-**Example:**
-
-```python
-task = await client.get_task("task-12345")
-print(f"Task status: {task.status}")
-```
-
-##### wait_for_task
-
-```python
-async def wait_for_task(
-    self,
-    task_id: str,
-    polling_interval: float = 2.0,
-    timeout: Optional[float] = None,
-    verbose: bool = False
-) -> Task
-```
-
-Wait for a task to complete, polling at regular intervals.
-
-**Parameters:**
-- `task_id`: The ID of the task to wait for.
-- `polling_interval`: How often to check the task status in seconds.
-- `timeout`: Maximum time to wait for the task to complete in seconds. If None, wait indefinitely.
-- `verbose`: Whether to print progress information.
-
-**Returns:**
-- A `Task` object containing the completed task details.
-
-**Example:**
-
-```python
-task = await client.wait_for_task("task-12345", timeout=300, verbose=True)
-if task.status == "success":
-    print(f"Model URL: {task.output.model}")
-```
-
-##### download_task_models
-
-```python
-async def download_task_models(
-    self,
-    task: Task,
-    output_dir: str,
-) -> Dict[str, str]
-```
-
-Download model files from a completed task.
-
-**Parameters:**
-- `task`: The completed task object.
-- `output_dir`: Directory to save the downloaded files.
-
-**Returns:**
-- A dictionary containing the paths to the downloaded files:
-  ```python
-  {
-      "model": "path/to/model.glb",      # Path to the main model file
-      "base_model": "path/to/base.glb",  # Path to the base model file
-      "pbr_model": "path/to/pbr.glb"     # Path to the PBR model file
-  }
-  ```
-
-**Raises:**
-- `TripoRequestError`: If the download fails.
-- `ValueError`: If the task is not successful or output directory doesn't exist.
-- `FileNotFoundError`: If the output directory doesn't exist.
-
-**Example:**
-
-```python
-# Wait for task completion
-task = await client.wait_for_task(task_id)
-
-if task.status == TaskStatus.SUCCESS:
-    # Download model files
-    downloaded_files = await client.download_task_models(task, "./output")
-
-    # Print downloaded file paths
-    for model_type, file_path in downloaded_files.items():
-        if file_path:
-            print(f"Downloaded {model_type}: {file_path}")
-```
-
-##### download_rendered_image
-
-```python
-async def download_rendered_image(
-    self,
-    task: Task,
-    output_dir: str,
-    filename: Optional[str] = None,
-) -> Optional[str]
-```
-
-Download the rendered image from a completed task.
-
-**Parameters:**
-- `task`: The completed task object.
-- `output_dir`: Directory to save the downloaded image.
-- `filename`: Optional custom filename for the image.
-
-**Returns:**
-- The path to the downloaded image file, or None if no image is available.
-
-**Example:**
-
-```python
-task = await client.wait_for_task(task_id)
-if task.status == TaskStatus.SUCCESS:
-    image_path = await client.download_rendered_image(task, "./output")
-    if image_path:
-        print(f"Downloaded rendered image: {image_path}")
-```
-
-##### get_balance
-
-```python
-async def get_balance(self) -> Balance
-```
-
-Get the user's account balance.
-
-**Returns:**
-- A `Balance` object with account details.
-
-**Example:**
-
-```python
-balance = await client.get_balance()
-print(f"Available balance: {balance.balance}")
-print(f"Frozen amount: {balance.frozen}")
-```
-
-#### Generation Methods
-
-##### text_to_model
-
-```python
-async def text_to_model(
-    self,
-    prompt: str,
-    negative_prompt: Optional[str] = None,
-    model_version: Optional[str] = "v2.5-20250123",
-    face_limit: Optional[int] = None,
-    texture: Optional[bool] = True,
-    pbr: Optional[bool] = True,
-    image_seed: Optional[int] = None,
-    model_seed: Optional[int] = None,
-    texture_seed: Optional[int] = None,
-    texture_quality: str = "standard",
-    style: Optional[ModelStyle] = None,
-    auto_size: bool = False,
-    quad: bool = False,
-    compress: bool = False,
-    generate_parts: bool = False,
-    smart_low_poly: bool = False,
-) -> str
-```
-
-Creates a 3D model from a text prompt.
-
-**Parameters:**
-
-- `prompt`: The text prompt for generating the 3D model.
-- `negative_prompt`: Text prompt for characteristics to avoid.
-- `model_version`: The version of the model to use.
-- `face_limit`: Maximum number of faces for the generated model.
-- `texture`: Whether to generate texture (default: True).
-- `pbr`: Whether to generate PBR materials (default: True).
-- `image_seed`: Seed for text-to-text step randomization.
-- `model_seed`: Seed for 3D model generation randomization.
-- `texture_seed`: Seed for texture generation randomization.
-- `texture_quality`: Quality of the texture, "standard" or "detailed".
-- `style`: Style to apply to the model from ModelStyle enum. Used for initial model generation.
-- `auto_size`: Whether to automatically determine the model size.
-- `quad`: Whether to generate a quad (4-sided) model.
-- `compress`: Whether to compress the model geometry.
-- `generate_parts`: Whether to generate model parts.
-- `smart_low_poly`: Whether to use smart low poly generation.
-
-**Returns:**
-- The task ID as a string.
-
-**Example:**
+### text_to_model
 
 ```python
 task_id = await client.text_to_model(
-    prompt="A small house with a red roof",
-    negative_prompt="poorly made, damaged",
-    compress=True,
-    generate_parts=True
+    prompt="a cute red panda",
+    negative_prompt=None,
+    model_version="v2.5-20250123",
+    face_limit=None, texture=True, pbr=True,
+    image_seed=None, model_seed=None, texture_seed=None,
+    texture_quality="standard", geometry_quality="standard",
+    auto_size=False, quad=False, compress=False,
+    generate_parts=False, smart_low_poly=False, export_uv=True,
 )
 ```
 
-##### image_to_model
+`model_version`: `v3.1-20260211`, `v3.0-20250812`, `v2.5-20250123`, `P1-20260311`,
+`P2-20260801`; `v1.4-20240625` is still accepted. `v2.0-20240919` is not available on apiv3.
+`texture_quality` also accepts `detailed`. `compress=True` sends `compress: "geometry"`.
 
-```python
-async def image_to_model(
-    self,
-    image: Optional[str] = None,
-    model_version: Optional[str] = "v2.5-20250123",
-    face_limit: Optional[int] = None,
-    texture: Optional[bool] = True,
-    pbr: Optional[bool] = True,
-    model_seed: Optional[int] = None,
-    texture_seed: Optional[int] = None,
-    texture_quality: str = "standard",
-    texture_alignment: str = "original_image",
-    style: Optional[ModelStyle] = None,
-    auto_size: bool = False,
-    orientation: str = "default",
-    quad: bool = False,
-    compress: bool = False,
-    generate_parts: bool = False,
-    smart_low_poly: bool = False,
-) -> str
-```
-
-Creates a 3D model from an image.
-
-**Parameters:**
-
-- `image`: The image input. Can be:
-  - A path to a local image file
-  - A URL to an image
-  - An image token from previous upload
-- `model_version`: The version of the model to use.
-- `face_limit`: Maximum number of faces for the generated model.
-- `texture`: Whether to generate texture (default: True).
-- `pbr`: Whether to generate PBR materials (default: True).
-- `model_seed`: Seed for 3D model generation randomization.
-- `texture_seed`: Seed for texture generation randomization.
-- `texture_quality`: Quality of the texture, "standard" or "detailed".
-- `texture_alignment`: How to align the texture, "original_image" or "geometry".
-- `style`: Style to apply to the model from ModelStyle enum. Used for initial model generation.
-- `auto_size`: Whether to automatically determine the model size.
-- `orientation`: The orientation of the model, "default" or "align_image".
-- `quad`: Whether to generate a quad (4-sided) model.
-- `compress`: Whether to compress the model geometry.
-- `generate_parts`: Whether to generate model parts.
-- `smart_low_poly`: Whether to use smart low poly generation.
-
-**Returns:**
-- The task ID as a string.
-
-**Raises:**
-- `TripoRequestError`: If the request fails.
-- `TripoAPIError`: If the API returns an error.
-- `FileNotFoundError`: If the image file does not exist.
-- `ValueError`: If no image is provided.
-
-**Example:**
+### image_to_model
 
 ```python
 task_id = await client.image_to_model(
-    image="path/to/car.jpg",
-    compress=True,
-    generate_parts=True
-)
-
-# Using a URL
-task_id = await client.image_to_model(
-    image="https://example.com/car.jpg",
-)
-
-# Using a previously uploaded image token
-task_id = await client.image_to_model(
-    image="12345678-1234-5678-1234-567812345678",
+    image="./cat.png",
+    model_version="v2.5-20250123",
+    texture_alignment="original_image", orientation="default",
+    enable_image_autofix=False,
+    # same quality / topology options as text_to_model
 )
 ```
 
-##### multiview_to_model
+### multiview_to_model
 
 ```python
-async def multiview_to_model(
-    self,
-    images: List[str],
-    model_version: Optional[str] = "v2.5-20250123",
-    face_limit: Optional[int] = None,
-    texture: Optional[bool] = True,
-    pbr: Optional[bool] = True,
-    model_seed: Optional[int] = None,
-    texture_seed: Optional[int] = None,
-    texture_quality: str = "standard",
-    texture_alignment: str = "original_image",
-    auto_size: bool = False,
-    orientation: str = "default",
-    quad: bool = False,
-    compress: bool = False,
-    generate_parts: bool = False,
-    smart_low_poly: bool = False,
-) -> str
-```
-
-Creates a 3D model from multiple view images.
-
-**Parameters:**
-- `images`: List of images. Each image can be:
-  - A path to a local image file
-  - A URL to an image
-  - An image token from previous upload
-- `model_version`: The version of the model to use.
-- `face_limit`: Maximum number of faces for the generated model.
-- `texture`: Whether to generate texture.
-- `pbr`: Whether to generate PBR materials.
-- `model_seed`: Seed for 3D model generation randomization.
-- `texture_seed`: Seed for texture generation randomization.
-- `texture_quality`: Quality of the texture, "standard" or "detailed".
-- `texture_alignment`: How to align the texture, "original_image" or "geometry".
-- `auto_size`: Whether to automatically determine the model size.
-- `orientation`: The orientation of the model, "default" or "align_image".
-- `quad`: Whether to generate a quad (4-sided) model.
-- `compress`: Whether to compress the model geometry.
-- `generate_parts`: Whether to generate model parts.
-- `smart_low_poly`: Whether to use smart low poly generation.
-
-**Returns:**
-- The task ID as a string.
-
-##### convert_model
-
-```python
-async def convert_model(
-    self,
-    original_model_task_id: str,
-    format: str,
-    quad: bool = False,
-    force_symmetry: bool = False,
-    face_limit: int = 10000,
-    flatten_bottom: bool = False,
-    flatten_bottom_threshold: float = 0.01,
-    texture_size: int = 4096,
-    texture_format: str = "JPEG",
-    pivot_to_center_bottom: bool = False,
-    with_animation: bool = False,
-    pack_uv: bool = False,
-    bake: bool = True,
-    part_names: Optional[List[str]] = None,
-) -> str
-```
-
-Convert a 3D model to different format.
-
-**Parameters:**
-- `original_model_task_id`: The task ID of the original model.
-- `format`: Output format. One of: "GLTF", "USDZ", "FBX", "OBJ", "STL", "3MF".
-- `quad`: Whether to generate quad mesh. Default: False
-- `force_symmetry`: Whether to force model symmetry. Default: False
-- `face_limit`: Maximum number of faces. Default: 10000
-- `flatten_bottom`: Whether to flatten the bottom of the model. Default: False
-- `flatten_bottom_threshold`: Threshold for bottom flattening. Default: 0.01
-- `texture_size`: Size of the texture. Default: 4096
-- `texture_format`: Format of the texture. One of: "BMP", "DPX", "HDR", "JPEG", "OPEN_EXR", "PNG", "TARGA", "TIFF", "WEBP". Default: "JPEG"
-- `pivot_to_center_bottom`: Whether to move pivot point to center bottom. Default: False
-- `with_animation`: Whether to export animation. Default: False
-- `pack_uv`: Whether to pack UV. Default: False
-- `bake`: Whether to bake the model. Default: True
-- `part_names`: List of part names to export.
-
-**Returns:**
-- The task ID as a string.
-
-##### stylize_model
-
-```python
-async def stylize_model(
-    self,
-    original_model_task_id: str,
-    style: PostStyle,
-    block_size: int = 80
-) -> str
-```
-
-Apply a post-processing style to an existing 3D model.
-
-**Parameters:**
-- `original_model_task_id`: The task ID of the model to stylize.
-- `style`: Style to apply from PostStyle enum. Available options:
-  - `PostStyle.LEGO`
-  - `PostStyle.VOXEL`
-  - `PostStyle.VORONOI`
-  - `PostStyle.MINECRAFT`
-- `block_size`: Size of the blocks for stylization. Default: 80
-
-**Returns:**
-- The task ID as a string.
-
-##### texture_model
-
-```python
-async def texture_model(
-    self,
-    original_model_task_id: str,
-    texture: bool = True,
-    pbr: bool = True,
-    model_seed: Optional[int] = None,
-    texture_seed: Optional[int] = None,
-    texture_quality: Optional[str] = "standard",
-    texture_alignment: str = "original_image",
-    part_names: Optional[List[str]] = None,
-    compress: bool = False,
-    bake: bool = True,
-    text_prompt: Optional[str] = None,
-    image_prompt: Optional[str] = None,
-    style_image: Optional[str] = None,
-) -> str
-```
-
-Generate new texture for an existing 3D model.
-
-**Parameters:**
-- `original_model_task_id`: The task ID of the model to texture.
-- `texture`: Whether to generate texture. Default: True
-- `pbr`: Whether to generate PBR materials. Default: True
-- `model_seed`: Seed for model generation randomization.
-- `texture_seed`: Seed for texture generation randomization.
-- `texture_quality`: Quality of the texture. One of: "standard" or "detailed".
-- `texture_alignment`: How to align the texture. One of: "original_image" or "geometry". Default: "original_image"
-- `part_names`: List of part names to texture.
-- `compress`: Whether to compress the model geometry.
-- `bake`: Whether to bake the model. Default: True
-- `text_prompt`: Text prompt for texture generation.
-- `image_prompt`: Image prompt for texture generation. Can be:
-  - A path to a local image file
-  - A URL to an image
-  - An image token from previous upload
-- `style_image`: Style image for texture generation. Same format as image_prompt.
-
-**Returns:**
-- The task ID as a string.
-
-##### refine_model
-
-```python
-async def refine_model(
-    self,
-    draft_model_task_id: str
-) -> str
-```
-
-Refine an existing 3D model.
-
-**Parameters:**
-- `draft_model_task_id`: The task ID of the model to refine.
-
-**Returns:**
-- The task ID as a string.
-
-##### check_riggable
-
-```python
-async def check_riggable(
-    self,
-    original_model_task_id: str
-) -> str
-```
-
-Check if a model can be rigged for animation.
-
-**Parameters:**
-- `original_model_task_id`: The task ID of the model to check.
-
-**Returns:**
-- The task ID for the rigging check task.
-
-**Example:**
-
-```python
-# Check if model can be rigged
-check_task_id = await client.check_riggable("task-12345")
-check_result = await client.wait_for_task(check_task_id)
-
-# Check the result
-if check_result.output.riggable:
-    print("Model can be rigged")
-else:
-    print("Model cannot be rigged")
-```
-
-##### rig_model
-
-```python
-async def rig_model(
-    self,
-    original_model_task_id: str,
-    out_format: str = "glb",
-    rig_type: Optional[RigType] = None,
-    spec: Optional[RigSpec] = None,
-) -> str
-```
-
-Rig a 3D model for animation.
-
-**Parameters:**
-- `original_model_task_id`: The task ID of the model to rig.
-- `out_format`: Output format, either "glb" or "fbx". Default: "glb"
-- `rig_type`: Rigging type from RigType enum. Available options:
-  - `RigType.BIPED`
-  - `RigType.QUADRUPED`
-  - `RigType.HEXAPOD`
-  - `RigType.OCTOPOD`
-  - `RigType.AVIAN`
-  - `RigType.SERPENTINE`
-  - `RigType.AQUATIC`
-  - `RigType.OTHERS`
-- `spec`: Rigging specification from RigSpec enum. Available options:
-  - `RigSpec.MIXAMO`
-  - `RigSpec.TRIPO`
-
-**Returns:**
-- The task ID for the rigging task.
-
-**Raises:**
-- `ValueError`: If out_format is not "glb" or "fbx"
-- `TripoRequestError`: If the request fails.
-- `TripoAPIError`: If the API returns an error.
-
-**Example:**
-
-```python
-# First check if model can be rigged
-check_task_id = await client.check_riggable("task-12345")
-check_result = await client.wait_for_task(check_task_id)
-
-if check_result.output.riggable:
-    # Rig the model
-    rig_task_id = await client.rig_model(
-        original_model_task_id="task-12345",
-        out_format="glb",
-        rig_type=RigType.BIPED,
-        spec=RigSpec.TRIPO
-    )
-    rig_result = await client.wait_for_task(rig_task_id)
-```
-
-##### retarget_animation
-
-```python
-async def retarget_animation(
-    self,
-    original_model_task_id: str,
-    animation: Union[Animation, List[Animation]],
-    out_format: str = "glb",
-    bake_animation: bool = True,
-    export_with_geometry: bool = False,
-) -> str
-```
-
-Apply an animation to a rigged model.
-
-**Parameters:**
-- `original_model_task_id`: The task ID of the original model.
-- `animation`: The animation to apply from Animation enum, or a list of animations.
-- `out_format`: Output format, either "glb" or "fbx". Default: "glb"
-- `bake_animation`: Whether to bake the animation. Default: True
-- `export_with_geometry`: Whether to export the animation with geometry. Default: False
-
-**Returns:**
-- The task ID as a string.
-
-**Example:**
-
-```python
-# Apply single animation
-task_id = await client.retarget_animation(
-    original_model_task_id="task-12345",
-    animation=Animation.WALK,
-    out_format="glb"
+task_id = await client.multiview_to_model(
+    images=["front.png", "left.png", None, "right.png"],   # order: front, left, back, right
+    model_version="v3.0-20250812",
 )
+task_id = await client.multiview_to_model(multiview_task_id)  # output of generate_multiview_image
+```
 
-# Apply multiple animations
-task_id = await client.retarget_animation(
-    original_model_task_id="task-12345",
-    animation=[Animation.WALK, Animation.RUN],
-    out_format="glb"
+The front view is required; missing views are `None`. `v1.4-20240625` is not available here.
+
+### text_to_image / image_to_image / generate_image
+
+```python
+task_id = await client.text_to_image("a red panda", model="seedream_v4", size="1024x1024")
+task_id = await client.image_to_image("./ref.png", prompt="make it blue", model="seedream_v5",
+                                      inputs=["./ref2.png"])
+task_id = await client.generate_image(prompt="...", model_version=None, file="./ref.png",
+                                      files=None, template=None, t_pose=False, sketch_to_render=False)
+```
+
+The finished task exposes the image as `task.output.image` (`generated_image_url`).
+
+### image_to_multiview / generate_multiview_image / edit_multiview
+
+```python
+task_id = await client.generate_multiview_image("./cat.png")
+task_id = await client.edit_multiview_image(task_id, [{"view": "front", "prompt": "red shirt"}])
+```
+
+Views are in `task.output.front_view_url`, `left_view_url`, `back_view_url`, `right_view_url`.
+
+### image_to_splat / image_to_depth
+
+```python
+task_id = await client.image_to_splat("./cat.png", model_seed=None)
+task_id = await client.image_to_depth("./cat.png", kind="gray", process_res=504)
+```
+
+## Model post-processing
+
+### texture_model
+
+```python
+task_id = await client.texture_model(
+    original_model_task_id,
+    model_version="v2.5-20250123",          # v2.5-20250123 | v3.0-20250812 | v3.5-20260815
+    texture=True, pbr=True, texture_seed=None,
+    texture_quality="standard",             # standard | detailed | fast (v3.5 only)
+    texture_alignment="original_image",
+    part_names=None, compress=False, bake=True,
+    text_prompt=None, image_prompt=None, style_image=None,
+    delight=None,                           # forwarded, v3.5 option
 )
 ```
 
-##### mesh_segmentation
+### convert_model
 
 ```python
-async def mesh_segmentation(
-    self,
-    original_model_task_id: str,
-    model_version: Optional[str] = "v1.0-20250506",
-) -> str
+task_id = await client.convert_model(
+    original_model_task_id, "FBX",          # GLTF | USDZ | FBX | OBJ | STL | 3MF
+    quad=False, force_symmetry=False, face_limit=None,
+    flatten_bottom=False, flatten_bottom_threshold=0.01,
+    texture_size=4096, texture_format="JPEG", scale_factor=1.0,
+    pivot_to_center_bottom=False, with_animation=True, pack_uv=False, bake=True,
+    part_names=None, export_vertex_colors=False, fbx_preset="blender",
+    export_orientation="+x", animate_in_place=False,
+)
 ```
 
-Segment a 3D model into parts.
+`face_limit` values `<= 0` mean "no limit" and are not sent.
 
-**Parameters:**
-- `original_model_task_id`: The task ID of the original model.
-- `model_version`: The model version to use.
-
-**Returns:**
-- The task ID as a string.
-
-##### mesh_completion
+### import_model
 
 ```python
-async def mesh_completion(
-    self,
-    original_model_task_id: str,
-    model_version: Optional[str] = "v1.0-20250506",
-    part_names: Optional[List[str]] = None,
-) -> str
+task_id = await client.import_model("./chair.glb")      # or a model URL / file_token
 ```
 
-Complete a 3D model or specific parts.
+The import task ID can then be used as `original_model_task_id` everywhere.
 
-**Parameters:**
-- `original_model_task_id`: The task ID of the original model.
-- `model_version`: The model version to use.
-- `part_names`: List of part names to complete.
+### refine_model, stylize_model (removed)
 
-**Returns:**
-- The task ID as a string.
+Refine and stylize are no longer supported by Tripo. Both methods still exist so that code written
+for 0.x (such as ComfyUI-Tripo 1.3.x) gets a clear `TripoValidationError` (a `ValueError`) saying so,
+instead of an `AttributeError`; they never send a request. `create_task` rejects these two types too.
+`PostStyle` stays importable for the same reason.
 
-##### smart_lowpoly
+## Animation
+
+### rig_check / check_riggable
 
 ```python
-async def smart_lowpoly(
-    self,
-    original_model_task_id: str,
-    model_version: Optional[str] = "P-v1.0-20250506",
-    quad: bool = False,
-    part_names: Optional[List[str]] = None,
-    face_limit: Optional[int] = 4000,
-    bake: bool = True,
-) -> str
+check_id = await client.check_riggable(original_model_task_id)
+check = await client.wait_for_task(check_id)
+check.output.riggable, check.output.rig_type   # e.g. True, "biped"
 ```
 
-Convert a high poly model to a low poly model.
+apiv3 reports the detected skeleton as `topology`; the SDK exposes it as `rig_type` too.
 
-**Parameters:**
-- `original_model_task_id`: The task ID of the original model.
-- `model_version`: The model version to use.
-- `quad`: Whether to generate a quad model.
-- `part_names`: List of part names to process.
-- `face_limit`: The maximum number of faces. Default: 4000
-- `bake`: Whether to bake the model. Default: True
-
-**Returns:**
-- The task ID as a string.
-
-## Enums
-
-### Animation
-
-Available preset animations for retargeting.
+### rig / rig_model
 
 ```python
-class Animation(str, Enum):
-    IDLE = "preset:idle"
-    WALK = "preset:walk"
-    RUN = "preset:run"
-    DIVE = "preset:dive"
-    CLIMB = "preset:climb"
-    JUMP = "preset:jump"
-    SLASH = "preset:slash"
-    SHOOT = "preset:shoot"
-    HURT = "preset:hurt"
-    FALL = "preset:fall"
-    TURN = "preset:turn"
-    QUADRUPED_WALK = "preset:quadruped:walk"
-    HEXAPOD_WALK = "preset:hexapod:walk"
-    OCTOPOD_WALK = "preset:octopod:walk"
-    SERPENTINE_MARCH = "preset:serpentine:march"
-    AQUATIC_MARCH = "preset:aquatic:march"
+task_id = await client.rig_model(original_model_task_id, model_version="v1.0-20240301",
+                                 out_format="glb", rig_type=RigType.BIPED, spec=RigSpec.TRIPO)
+task_id = await client.rig(original_model_task_id, model="v3.0-20260909",
+                           rig_type="others", spec="vrm", no_weights_list=["hair"])
 ```
 
-### ModelStyle
+`model_version` / `model`: `v1.0-20240301` (default), `v2.5-20260210`, `v3.0-20260909`.
+The retired `v2.0-20250506` is sent as `v2.5-20260210` (with a warning), which is what the v2
+API did. `spec`: `tripo`, `mixamo`, `actorcore`, `unity`, `unreal`, `vrm`.
 
-Available styles for model generation.
+### retarget / retarget_animation
 
 ```python
-class ModelStyle(str, Enum):
-    # Person styles
-    PERSON_TO_CARTOON = "person:person2cartoon"
-
-    # Animal styles
-    ANIMAL_VENOM = "animal:venom"
-
-    # Object styles
-    OBJECT_CLAY = "object:clay"
-    OBJECT_STEAMPUNK = "object:steampunk"
-    OBJECT_CHRISTMAS = "object:christmas"
-    OBJECT_BARBIE = "object:barbie"
-
-    # Material styles
-    GOLD = "gold"
-    ANCIENT_BRONZE = "ancient_bronze"
+task_id = await client.retarget_animation(rig_task_id, Animation.WALK, out_format="glb",
+                                          export_with_geometry=False, animate_in_place=False)
+task_id = await client.retarget(rig_task_id, animations=["preset:walk", "preset:run"])
 ```
 
-### PostStyle
+At most 5 animations per task. `bake_animation` is accepted but ignored (apiv3 no longer uses it).
 
-Available styles for model postprocessing.
+### text_to_motion
 
 ```python
-class PostStyle(str, Enum):
-    # Stylization styles
-    LEGO = "lego"
-    VOXEL = "voxel"
-    VORONOI = "voronoi"
-    MINECRAFT = "minecraft"
+task_id = await client.text_to_motion([{"prompt": "walk forward", "frames": 90}])
 ```
 
-### RigType
+1–10 segments, 30–300 frames each. Use the resulting motion name as `animation` in `retarget`.
 
-Available rigging types for models.
+## Mesh
 
 ```python
-class RigType(str, Enum):
-    BIPED = "biped"
-    QUADRUPED = "quadruped"
-    HEXAPOD = "hexapod"
-    OCTOPOD = "octopod"
-    AVIAN = "avian"
-    SERPENTINE = "serpentine"
-    AQUATIC = "aquatic"
-    OTHERS = "others"
+task_id = await client.mesh_segmentation(original_model_task_id, model_version="v2.0-20260430",
+                                         segmentation_granularity="balanced",   # simple | balanced | detailed
+                                         ref_image="./hint.png", split_by_connectivity=True)
+task_id = await client.mesh_completion(segment_task_id, completion_mode="ai_completion")  # or quick_cap
+task_id = await client.smart_lowpoly(original_model_task_id, model_version="v3.0",       # v1.0 | v2.0 | v3.0
+                                     face_limit=10000, quad=False, smart_uv=True)
+task_id = await client.mesh_uv(original_model_task_id)
 ```
 
-### RigSpec
+- `mesh_completion` requires a `mesh_segmentation` task as input.
+- `smart_lowpoly` face limit: 500–20000 (quad ≤ 10000) for v2.0/v3.0. `smart_uv` needs v3.0.
+  The full names `P-v1.0-20250506`, `P-v2.0-20251225`, `P-v2.0-20251226` and `P-v3.0-20260909` are
+  translated to `v1.0` / `v2.0` / `v3.0`, the only values apiv3 accepts.
+- `mesh_uv` (Smart UV, 20 credits) returns `output.model_url` and `output.uv_render_url`; the
+  input must not exceed 80,000 equivalent triangles.
 
-Available rigging specifications.
-
-```python
-class RigSpec(str, Enum):
-    MIXAMO = "mixamo"
-    TRIPO = "tripo"
-```
-
-### TaskStatus
-
-Task status enumeration.
-
-```python
-class TaskStatus(str, Enum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    UNKNOWN = "unknown"
-    BANNED = "banned"
-    EXPIRED = "expired"
-```
-
-## Data Models
+## Data models
 
 ### Task
 
-Task data model containing task information.
-
-```python
-@dataclass
-class Task:
-    task_id: str
-    type: str
-    status: TaskStatus
-    input: Dict[str, Any]
-    output: TaskOutput
-    progress: int
-    create_time: int
-    running_left_time: Optional[int] = None
-    queuing_num: Optional[int] = None
-    error_code: Optional[int] = None
-    error_msg: Optional[str] = None
-
-    @property
-    def created_at(self) -> datetime.datetime:
-        """Get the creation time as a datetime object."""
-        return datetime.datetime.fromtimestamp(self.create_time)
-```
+| Field | Description |
+| --- | --- |
+| `task_id`, `type` | |
+| `status` | `TaskStatus` (a `str` enum: `queued`, `running`, `success`, `failed`, `cancelled`, `banned`, `expired`, `unknown`) |
+| `progress` | 0–100 |
+| `output` | `TaskOutput` |
+| `create_time` | Unix seconds; `created_at` property returns a `datetime` |
+| `completed_at` | ISO-8601 string |
+| `credits_consumed` | Credits charged |
+| `error_code`, `error_msg` | Set on failure (`error_message` is an alias) |
+| `raw` | The untouched API payload |
 
 ### TaskOutput
 
-Task output data containing model URLs and other results.
+`model` / `pbr_model` / `model_url` (same URL), `base_model`, `rendered_image`, `image`,
+`front_view_url`, `left_view_url`, `back_view_url`, `right_view_url`, `riggable`, `rig_type`,
+`topology`, `uv_render_url`, `depth_image_url`, `motion_url`, `rendered_video_url`, `raw`, and
+`urls` (every `*_url` field).
 
-```python
-@dataclass
-class TaskOutput:
-    model: Optional[str] = None
-    base_model: Optional[str] = None
-    pbr_model: Optional[str] = None
-    rendered_image: Optional[str] = None
-    riggable: Optional[bool] = None
-    rig_type: Optional[RigType] = None
-```
+### Enums
 
-### Balance
+`Animation`, `PostStyle`, `RigType`, `RigSpec`, `TaskStatus` — see `tripo3d.models`.
 
-User balance data model.
+## Errors
 
-```python
-@dataclass
-class Balance:
-    balance: float
-    frozen: float
-```
+| Exception | When |
+| --- | --- |
+| `TripoAPIError` | The API returned an error `code` (`code`, `message`, `suggestion`, `request_id`) |
+| `TripoRequestError` | HTTP or network failure without an API error body (`status_code`, `message`) |
+| `TripoValidationError` | Invalid arguments; also a `ValueError` |
+| `TripoPollTimeoutError` | `wait_for_task` timeout; also an `asyncio.TimeoutError` |
+
+All derive from `TripoError`. `TripoApiError` / `TripoNetworkError` are aliases.
+`GET` requests are retried up to 3 times on 429/502/503/504 and connection errors; task
+creation is never retried.
+
+## Migrating from 0.x
+
+| 0.x | 1.x |
+| --- | --- |
+| v2 endpoint `api.tripo3d.ai/v2/openapi` | apiv3 `openapi.tripo3d.ai` / `openapi.tripo3d.com` |
+| `upload_file` returned `{"object": {...}}` with boto3 | Always `{"file_token": ...}`; `boto3` is no longer used (`tripo3d[s3]` is empty) |
+| Separate model / pbr_model downloads | One model file; `pbr_model` points at it |
+| `wait_for_task(use_v3=True)` for segmentation v2 | Not needed; accepted and ignored |
+| Rig `v2.0-20250506` | Sent as `v2.5-20260210` |
+| `smart_lowpoly` model `P-v2.0-20251225` / `P-v3.0-20260909` | Sent as `v2.0` / `v3.0` (apiv3 rejects the full names) |
+| `bake_animation` | Ignored |
+| `refine_model`, `stylize_model` | No longer supported; raise `TripoValidationError` without calling the API |
+| Text/image model `v2.0-20240919` | Not available; use `v2.5-20250123` or newer |
+| Status `banned` / `expired` | apiv3 reports both as `failed` with an `error_code` |
