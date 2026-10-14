@@ -1,35 +1,102 @@
 """
 Tripo 3D Generation API Client.
 
-This module provides a client for the Tripo 3D Generation API.
+All calls go to apiv3 (``https://openapi.tripo3d.ai`` / ``https://openapi.tripo3d.com``).
+Method names, parameter names and return types of 0.x are kept, so existing callers
+(including ComfyUI-Tripo <= 1.3.x) keep working after the v2 shutdown.
 """
 
 import os
 import asyncio
+import inspect
+import mimetypes
 import time
 import warnings
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Union, Literal
-import inspect
-import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union
 
-from .models import Animation, PostStyle, Task, Balance, TaskStatus, RigType, RigSpec
-from .client_impl import ClientImpl
-from .exceptions import TripoRequestError
+from ._http import HttpBackend, create_http_backend
+from .exceptions import TripoRequestError, TripoPollTimeoutError, TripoValidationError
+from .inputs import FILE_TOKEN, LOCAL_FILE, InputLike, classify, looks_like_path
+from .models import (
+    Animation,
+    Balance,
+    BatchTaskResult,
+    PostStyle,
+    PresignedUpload,
+    RigSpec,
+    RigType,
+    Task,
+    TaskStatus,
+    TaskUsageItem,
+)
+
+BASE_URL_GLOBAL = "https://openapi.tripo3d.ai"
+BASE_URL_CN = "https://openapi.tripo3d.com"
+
+# v2 accepted these and rewrote them before dispatch; apiv3 rejects them.
+_LEGACY_RIG_MODEL_VERSIONS = {"v2.0-20250506": "v2.5-20260210"}  # openapi-server animate.go
+# apiv3 /v3/mesh/decimate only accepts v1.0 / v2.0 / v3.0 (ModelPostProcessValidation.ALLOWED_DECIMATE_MODELS).
+_LEGACY_LOWPOLY_MODEL_VERSIONS = {
+    "P-v1.0-20250506": "v1.0",
+    "P-v2.0-20251225": "v2.0",
+    "P-v2.0-20251226": "v2.0",
+    "P-v3.0-20260909": "v3.0",
+}
+
+# v2 ``type`` -> apiv3 route, for callers that still use ``create_task``.
+_CREATE_TASK_ROUTES = {
+    "text_to_model": "/v3/generation/text-to-model",
+    "image_to_model": "/v3/generation/image-to-model",
+    "multiview_to_model": "/v3/generation/multiview-to-model",
+    "text_to_image": "/v3/generation/text-to-image",
+    "generate_image": "/v3/generation/image-to-image",
+    "generate_multiview_image": "/v3/generation/image-to-multiview",
+    "edit_multiview_image": "/v3/generation/edit-multiview",
+    "image_to_splat": "/v3/generation/image-to-splat",
+    "image_to_depth": "/v3/generation/image-to-depth",
+    "texture_model": "/v3/models/texture",
+    "convert_model": "/v3/models/convert",
+    "import_model": "/v3/models/import",
+    "animate_prerigcheck": "/v3/animations/rig-check",
+    "animate_rig": "/v3/animations/rig",
+    "animate_retarget": "/v3/animations/retarget",
+    "mesh_segmentation": "/v3/mesh/segment",
+    "mesh_completion": "/v3/mesh/complete",
+    "highpoly_to_lowpoly": "/v3/mesh/decimate",
+    "mesh_uv": "/v3/mesh/uv",
+}
+
+_RETIRED_TASK_TYPES = {"refine_model", "stylize_model"}
+_RETIRED = ("{name} is no longer supported: Tripo has retired this capability. "
+            "Remove it from your code or workflow (no request was sent).")
+
+_IMAGE_FIELDS = {"rendered_image", "image", "front_view", "left_view", "back_view", "right_view",
+                 "uv_render", "depth_image"}
+_VIDEO_FIELDS = {"rendered_video"}
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
+
+
+def _deprecated(message: str) -> None:
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
 
 
 class TripoClient:
-    """Client for the Tripo 3D Generation API."""
+    """Async client for the Tripo apiv3 API."""
 
-    # The base URL for the Tripo API as specified in the OpenAPI schema
-    BASE_URL = "https://api.tripo3d.ai/v2/openapi"
     SEGMENT_V2_MODEL = "v2.0-20260430"
+    # Larger files go through a presigned PUT; /v3/files itself caps at 150 MB.
+    MULTIPART_MAX_BYTES = 50 * 1024 * 1024
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         IS_GLOBAL: bool = True,
         v3_base_url: Optional[str] = None,
+        verify_ssl: bool = True,
     ):
         """
         Initialize the Tripo API client.
@@ -37,196 +104,131 @@ class TripoClient:
         Args:
             api_key: The API key for authentication. If not provided, it will be read from the
                      TRIPO_API_KEY environment variable.
+            IS_GLOBAL: True for the global endpoint (openapi.tripo3d.ai), False for China
+                       (openapi.tripo3d.com).
+            v3_base_url: Override the endpoint, e.g. a staging host.
+            verify_ssl: Verify TLS certificates for API calls.
 
         Raises:
-            ValueError: If no API key is provided and the TRIPO_API_KEY environment variable is not set.
+            ValueError: If no API key is provided or the key does not start with ``tsk_``.
         """
         self.api_key = api_key or os.environ.get("TRIPO_API_KEY")
         if not self.api_key:
-            raise ValueError(
+            raise TripoValidationError(
                 "API key is required. Provide it as an argument or set the TRIPO_API_KEY environment variable."
             )
-
         if not self.api_key.startswith('tsk_'):
-            raise ValueError("API key must start with 'tsk_'")
+            raise TripoValidationError("API key must start with 'tsk_'")
 
-        if not IS_GLOBAL:
-            self.BASE_URL = "https://api.tripo3d.com/v2/openapi"
-            default_v3_base_url = "https://openapi.tripo3d.com"
-        else:
-            default_v3_base_url = "https://openapi.tripo3d.ai"
-
-        self._v3_base_url = v3_base_url or default_v3_base_url
-        self._impl = ClientImpl(self.api_key, self.BASE_URL)
-        self._v3_impl = ClientImpl(self.api_key, self._v3_base_url)
-
+        default_base = BASE_URL_GLOBAL if IS_GLOBAL else BASE_URL_CN
+        self.BASE_URL = (v3_base_url or default_base).rstrip("/")
+        self._v3_base_url = self.BASE_URL
+        self._http: HttpBackend = create_http_backend(self.api_key, self.BASE_URL, verify_ssl=verify_ssl)
 
     async def close(self) -> None:
         """Close any open connections."""
-        await self._impl.close()
-        await self._v3_impl.close()
-
-    def _is_ssl_error(self, error: Exception) -> bool:
-        """Check if the error is an SSL certificate verification error."""
-        error_str = str(error).lower()
-        ssl_error_indicators = [
-            'ssl certificate verification error',
-            'certificate_verify_failed',
-            'unable to get local issuer certificate',
-            'ssl: certificate_verify_failed',
-            'sslcertverificationerror'
-        ]
-        return any(indicator in error_str for indicator in ssl_error_indicators)
-
-    async def _download_with_ssl_retry(self, url: str, output_path: str) -> None:
-        """Download file with automatic SSL error retry."""
-        try:
-            # First try with normal SSL verification
-            await self._impl.download_file(url, output_path)
-        except Exception as e:
-            if self._is_ssl_error(e):
-                warnings.warn(
-                    "SSL certificate verification failed during download. Automatically retrying with SSL verification disabled. "
-                    "This reduces security but allows the download to proceed. "
-                    "Consider updating your system's certificate store for better security.",
-                    UserWarning
-                )
-                # Create a new implementation with SSL disabled just for this download
-                from .client_impl import ClientImpl
-                ssl_disabled_impl = ClientImpl(self.api_key, self.BASE_URL, verify_ssl=False)
-                try:
-                    await ssl_disabled_impl.download_file(url, output_path)
-                finally:
-                    await ssl_disabled_impl.close()
-            else:
-                raise
-
-    async def _v3_request(
-        self,
-        method: str,
-        path: str,
-        json_data: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """apiv3 dedicated channel (segment v2 only)."""
-        return await self._v3_impl._request(method, path, json_data=json_data)
-
-    async def _v3_upload_file(self, file_path: str) -> str:
-        """Upload via apiv3 POST /v3/files and return file_<uuid> token."""
-        return await self._v3_impl.upload_multipart(
-            "/v3/files",
-            file_path,
-            field_name="file",
-            response_token_key="file_token",
-        )
-
-    async def _v3_get_task(self, task_id: str) -> Dict[str, Any]:
-        """Query task via apiv3 GET /v3/tasks/{id}."""
-        response = await self._v3_request("GET", f"/v3/tasks/{task_id}")
-        return response["data"]
-
-    @staticmethod
-    def _normalize_v3_task_data(data: Dict[str, Any]) -> Dict[str, Any]:
-        """Map apiv3 task payload into v2 Task.from_dict shape."""
-        output = dict(data.get("output") or {})
-        normalized_output = dict(output)
-        url_key_map = {
-            "model_url": "model",
-            "base_model_url": "base_model",
-            "pbr_model_url": "pbr_model",
-            "rendered_image_url": "rendered_image",
-        }
-        for src_key, dst_key in url_key_map.items():
-            if src_key in output and dst_key not in normalized_output:
-                normalized_output[dst_key] = output[src_key]
-
-        create_time = data.get("create_time")
-        if create_time is None and data.get("created_at"):
-            created_at = data["created_at"]
-            if isinstance(created_at, str):
-                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                create_time = int(dt.timestamp())
-            elif isinstance(created_at, (int, float)):
-                create_time = int(created_at)
-
-        progress = data.get("progress")
-        if progress is None:
-            progress = 0
-
-        normalized = {
-            "task_id": data["task_id"],
-            "type": data["type"],
-            "status": data["status"],
-            "input": data.get("input") or {},
-            "output": normalized_output,
-            "progress": progress,
-            "create_time": create_time or 0,
-        }
-        for key in ("running_left_time", "queuing_num", "error_code", "error_msg"):
-            if key in data:
-                normalized[key] = data[key]
-        return normalized
+        await self._http.close()
 
     async def __aenter__(self) -> 'TripoClient':
-        """Enter the async context manager."""
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Exit the async context manager."""
         await self.close()
 
-    async def get_task(self, task_id: str, *, use_v3: bool = False) -> Task:
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _non_default(self, method_name: str, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep values that are set and differ from the method's declared default.
+
+        0.x only sent arguments that differed from the signature default and left the rest to
+        the server; apiv3 server defaults match those signatures, so the wire stays identical.
         """
-        Get the status of a task.
+        params = inspect.signature(getattr(type(self), method_name)).parameters
+        out: Dict[str, Any] = {}
+        for name, value in values.items():
+            if value is None:
+                continue
+            param = params.get(name)
+            if param is not None and param.default is not inspect.Parameter.empty and value == param.default:
+                continue
+            out[name] = _enum_value(value)
+        return out
+
+    @staticmethod
+    def _merge_extra(payload: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+        for key, value in extra.items():
+            if value is None:
+                continue
+            if key in payload:
+                raise TripoValidationError(f"parameter '{key}' is given twice")
+            payload[key] = _enum_value(value)
+        return payload
+
+    async def _resolve_input(self, value: InputLike) -> str:
+        """Turn a URL / file_token / task_id / local path into an apiv3 ``input`` string."""
+        if value is None or not str(value).strip():
+            raise TripoValidationError("input must be a non-empty URL, file_token, task_id or local file path")
+        kind = classify(value)
+        if kind == LOCAL_FILE:
+            return (await self.upload_file(str(value)))["file_token"]
+        text = str(value).strip()
+        if kind == FILE_TOKEN and looks_like_path(text):
+            raise FileNotFoundError(f"File not found: {text}")
+        return text
+
+    async def _submit(self, path: str, payload: Dict[str, Any]) -> str:
+        data = await self._http.request("POST", path, json_data=payload)
+        task_id = data.get("task_id") if isinstance(data, dict) else None
+        if not task_id:
+            raise TripoRequestError(0, f"Unexpected create response from {path}: {data!r}")
+        return str(task_id)
+
+    # ------------------------------------------------------------------
+    # Tasks
+    # ------------------------------------------------------------------
+
+    async def get_task(self, task_id: str, *, use_v3: bool = True, step: Optional[int] = None) -> Task:
+        """
+        Get the status of a task (``GET /v3/tasks/{task_id}``).
 
         Args:
             task_id: The ID of the task to get.
-            use_v3: When True, query apiv3 GET /v3/tasks/{id} (required for segment v2 tasks).
-
-        Returns:
-            The task data.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
+            use_v3: Ignored; every task is queried on apiv3. Kept for 0.x callers.
+            step: Pass 1 to include ``pipeline_step`` details.
         """
-        if use_v3:
-            data = await self._v3_get_task(task_id)
-        else:
-            response = await self._impl._request("GET", f"/task/{task_id}")
-            data = response["data"]
-        return Task.from_dict(self._normalize_v3_task_data(data) if use_v3 else data)
+        data = await self._http.request(
+            "GET", f"/v3/tasks/{task_id}", params={"step": step} if step is not None else None
+        )
+        if not isinstance(data, dict):
+            raise TripoRequestError(0, f"Unexpected task response: {data!r}")
+        return Task.from_dict(data)
 
+    async def list_tasks(self, task_ids: Sequence[str]) -> BatchTaskResult:
+        """Query several tasks at once (``POST /v3/tasks/list``)."""
+        if not task_ids:
+            raise TripoValidationError("task_ids must not be empty")
+        data = await self._http.request("POST", "/v3/tasks/list", json_data={"task_ids": list(task_ids)})
+        return BatchTaskResult.from_dict(data if isinstance(data, dict) else {})
+
+    get_tasks = list_tasks
 
     async def create_task(self, task_data: Dict[str, Any]) -> str:
         """
-        Create a task.
+        Create a task from a 0.x-style payload ``{"type": ..., ...}``.
 
-        Args:
-            task_data: The task data.
-
-        Returns:
-            The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
+        The ``type`` selects the apiv3 route; the remaining fields are sent as-is (apiv3 accepts
+        the v2 field names such as ``file`` / ``original_model_task_id``).
         """
-        response = await self._impl._request("POST", "/task", json_data=task_data)
-        return response["data"]["task_id"]
-
-    async def get_balance(self) -> Balance:
-        """
-        Get the user's balance.
-
-        Returns:
-            The user's balance.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        response = await self._impl._request("GET", "/user/balance")
-        return Balance.from_dict(response["data"])
+        body = dict(task_data)
+        task_type = body.pop("type", None)
+        if task_type in _RETIRED_TASK_TYPES:
+            raise TripoValidationError(_RETIRED.format(name=task_type))
+        path = _CREATE_TASK_ROUTES.get(task_type)
+        if path is None:
+            raise TripoValidationError(f"unsupported task type for apiv3: {task_type!r}")
+        return await self._submit(path, body)
 
     async def wait_for_task(
         self,
@@ -234,701 +236,507 @@ class TripoClient:
         polling_interval: float = 2.0,
         timeout: Optional[float] = None,
         verbose: bool = False,
-        use_v3: bool = False,
+        use_v3: bool = True,
     ) -> Task:
         """
-        Wait for a task to complete.
+        Wait for a task to reach a terminal status.
 
         Args:
             task_id: The ID of the task to wait for.
-            polling_interval: The interval in seconds to poll the task status.
-            timeout: The maximum time in seconds to wait for the task to complete.
-                    If None, wait indefinitely.
-            verbose: Print progress updates while polling.
-            use_v3: When True, poll apiv3 GET /v3/tasks/{id} (required for segment v2 tasks).
-
-        Returns:
-            The task data.
+            polling_interval: Initial polling interval in seconds (grows up to 30s).
+            timeout: Maximum seconds to wait; None waits indefinitely.
+            verbose: Print progress while polling.
+            use_v3: Ignored; kept for 0.x callers.
 
         Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-            asyncio.TimeoutError: If the task does not complete within the timeout.
+            TripoPollTimeoutError: (an ``asyncio.TimeoutError``) when ``timeout`` elapses.
         """
         start_time = time.monotonic()
-
+        interval = max(float(polling_interval), 0.1)
         while True:
-            # Check if we've exceeded the timeout
-            if timeout is not None:
-                elapsed = time.monotonic() - start_time
-                if elapsed >= timeout:
-                    raise asyncio.TimeoutError(f"Task {task_id} did not complete within {timeout} seconds")
-
-            # Get the task status
-            task = await self.get_task(task_id, use_v3=use_v3)
-
-            # If the task is done, return it
-            if task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.BANNED, TaskStatus.EXPIRED):
+            task = await self.get_task(task_id)
+            if task.status.is_terminal():
                 if verbose:
-                    elapsed = time.monotonic() - start_time
-                    print(f"\nTask {task_id} {task.status} in {elapsed} seconds")
+                    print(f"\nTask {task_id} {task.status.value} in {time.monotonic() - start_time:.1f} seconds")
                 return task
 
             if verbose:
-                progress_bar = f"[{'=' * (task.progress // 5)}{' ' * (20 - task.progress // 5)}] {task.progress}%"
-                remaining_time = f", estimated time remaining: {task.running_left_time}s" if hasattr(task, 'running_left_time') and task.running_left_time is not None else ""
-                print(f"\rTask {task_id} is {task.status}. Progress: {progress_bar}{remaining_time}", end='', flush=True)
+                progress = max(0, min(int(task.progress or 0), 100))
+                bar = f"[{'=' * (progress // 5)}{' ' * (20 - progress // 5)}] {progress}%"
+                print(f"\rTask {task_id} is {task.status.value}. Progress: {bar}", end='', flush=True)
 
-            # Calculate next polling interval based on estimated time remaining
-            if hasattr(task, 'running_left_time') and task.running_left_time is not None:
-                # Use 80% of the estimated remaining time as the next polling interval
-                polling_interval = max(2, task.running_left_time * 0.5)
-            else:
-                polling_interval = min(polling_interval * 2, 30)
-            # Wait before polling again
-            await asyncio.sleep(polling_interval)
+            sleep_for = interval
+            if timeout is not None:
+                remaining = timeout - (time.monotonic() - start_time)
+                if remaining <= 0:
+                    raise TripoPollTimeoutError(task_id=task_id, timeout_seconds=timeout)
+                sleep_for = min(sleep_for, remaining)
+            await asyncio.sleep(sleep_for)
+            interval = min(interval * 2, 30.0)
 
+    # ------------------------------------------------------------------
+    # Account
+    # ------------------------------------------------------------------
 
-    async def download_task_models(
-        self,
-        task: Task,
-        output_dir: str,
-    ) -> Dict[str, str]:
-        """
-        Download model files from a completed task.
+    async def get_balance(self) -> Balance:
+        """Get the account balance (``GET /v3/account/balance``)."""
+        data = await self._http.request("GET", "/v3/account/balance")
+        return Balance.from_dict(data if isinstance(data, dict) else {})
 
-        Args:
-            task: The completed task object.
-            output_dir: Directory to save the downloaded files.
+    async def get_usage(self, limit: int = 50, offset: int = 0) -> List[TaskUsageItem]:
+        """List recent task usage (``GET /v3/account/usage``)."""
+        data = await self._http.request("GET", "/v3/account/usage", params={"limit": limit, "offset": offset})
+        items = data.get("items") if isinstance(data, dict) else data
+        return [TaskUsageItem.from_dict(item) for item in (items or []) if isinstance(item, dict)]
 
-        Returns:
-            A dictionary containing the paths to the downloaded files:
-            {
-                "model": "path/to/model.glb",
-                "base_model": "path/to/base_model.glb",
-                "pbr_model": "path/to/pbr_model.glb"
-            }
+    # ------------------------------------------------------------------
+    # Files
+    # ------------------------------------------------------------------
 
-        Raises:
-            TripoRequestError: If the download fails.
-            ValueError: If the task is not successful or output_dir doesn't exist.
-            FileNotFoundError: If output_dir doesn't exist.
-        """
-        if task.status != TaskStatus.SUCCESS:
-            raise ValueError(f"Cannot download files from task with status: {task.status}")
-
-        if not os.path.exists(output_dir):
-            raise FileNotFoundError(f"Output directory not found: {output_dir}")
-        result = {}
-
-        _IMAGE_FIELDS = {"rendered_image", "image", "front_view", "left_view", "back_view", "right_view"}
-
-        def get_extension(url: str, field_name: str) -> str:
-            path = url.split('?')[0]
-            filename = path.split('/')[-1]
-            ext = os.path.splitext(filename)[1]
-            if ext:
-                return ext
-            return '.jpg' if field_name in _IMAGE_FIELDS else '.glb'
-
-        async def download_file(url: str, filename: str) -> Optional[str]:
-            if not url:
-                return None
-            output_path = os.path.join(output_dir, filename)
-            await self._download_with_ssl_retry(url, output_path)
-            return output_path
-
-        download_tasks = []
-
-        output_fields = [
-            ("model", task.output.model, "_model"),
-            ("base_model", task.output.base_model, "_base"),
-            ("pbr_model", task.output.pbr_model, "_pbr"),
-            ("rendered_image", task.output.rendered_image, "_rendered"),
-            ("image", task.output.image, "_image"),
-            ("front_view", task.output.front_view_url, "_front"),
-            ("left_view", task.output.left_view_url, "_left"),
-            ("back_view", task.output.back_view_url, "_back"),
-            ("right_view", task.output.right_view_url, "_right"),
-        ]
-
-        for field_name, url, suffix in output_fields:
-            if url:
-                ext = get_extension(url, field_name)
-                download_tasks.append((field_name, url, f"{task.task_id}{suffix}{ext}"))
-
-        # Download all files concurrently
-        if download_tasks:
-            download_coroutines = [
-                download_file(url, filename)
-                for _, url, filename in download_tasks
-            ]
-
-            download_results = await asyncio.gather(*download_coroutines, return_exceptions=True)
-
-            # Process download results
-            for i, (model_type, url, filename) in enumerate(download_tasks):
-                download_result = download_results[i]
-                if isinstance(download_result, Exception):
-                    result[model_type] = None
-                else:
-                    result[model_type] = download_result
-
+    async def presign_upload(self, format: str) -> PresignedUpload:
+        """Request a presigned PUT URL (``POST /v3/files/presign``)."""
+        data = await self._http.request("POST", "/v3/files/presign", json_data={"format": format.lstrip(".").lower()})
+        result = PresignedUpload.from_dict(data if isinstance(data, dict) else {})
+        if not result.upload_url or not result.file_token:
+            raise TripoRequestError(0, f"Incomplete presign response: {data!r}")
         return result
 
-
-    async def download_rendered_image(
-        self,
-        task: Task,
-        output_dir: str,
-        filename: Optional[str] = None,
-    ) -> Optional[str]:
+    async def upload_file(self, file_path: Union[str, Path]) -> Dict[str, Any]:
         """
-        Download the rendered image from a completed task.
+        Upload a local file and return ``{"file_token": "file_..."}``.
 
-        Args:
-            task: The completed task object.
-            output_dir: Directory to save the downloaded file.
-            filename: Optional custom filename. If not provided, will use task_id_rendered.jpg
-
-        Returns:
-            The path to the downloaded file, or None if no rendered image is available.
+        Files up to 50 MB use ``POST /v3/files``; larger files use a presigned PUT
+        (``POST /v3/files/presign``). The API caps uploads at 150 MB.
 
         Raises:
-            TripoRequestError: If the download fails.
-            ValueError: If the task is not successful or output_dir doesn't exist.
+            FileNotFoundError: If the file doesn't exist.
+        """
+        path = str(file_path)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"File not found: {path}")
+
+        if os.path.getsize(path) <= self.MULTIPART_MAX_BYTES:
+            data = await self._http.upload_multipart("/v3/files", path, field_name="file")
+            token = data.get("file_token") if isinstance(data, dict) else None
+            if not token:
+                raise TripoRequestError(0, f"Upload response missing file_token: {data!r}")
+            return {"file_token": str(token)}
+
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        if not ext:
+            raise TripoValidationError(f"Cannot determine file format from extension: {path}")
+        presigned = await self.presign_upload(ext)
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        await self._http.put_file(presigned.upload_url, path, content_type)
+        return {"file_token": presigned.file_token}
+
+    # ------------------------------------------------------------------
+    # Downloads
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_ssl_error(error: Exception) -> bool:
+        text = str(error).lower()
+        return any(marker in text for marker in (
+            'ssl certificate verification error',
+            'certificate_verify_failed',
+            'unable to get local issuer certificate',
+            'sslcertverificationerror',
+        ))
+
+    async def _download_with_ssl_retry(self, url: str, output_path: str) -> None:
+        try:
+            await self._http.download_file(url, output_path)
+        except Exception as e:
+            if not self._is_ssl_error(e):
+                raise
+            warnings.warn(
+                "SSL certificate verification failed during download. Retrying with SSL verification "
+                "disabled. Consider updating your system's certificate store.",
+                UserWarning,
+            )
+            insecure = create_http_backend(self.api_key, self.BASE_URL, verify_ssl=False)
+            try:
+                await insecure.download_file(url, output_path)
+            finally:
+                await insecure.close()
+
+    async def download_file(self, url: str, output_path: Union[str, Path]) -> None:
+        """Download a signed result URL to ``output_path`` (no API key is sent)."""
+        await self._download_with_ssl_retry(url, str(output_path))
+
+    async def download_task_models(self, task: Task, output_dir: str) -> Dict[str, Optional[str]]:
+        """
+        Download the files of a successful task.
+
+        Returns a dict keyed by output field (``model`` first). apiv3 returns a single model URL;
+        ``pbr_model`` points at the same downloaded file instead of fetching it twice. A field
+        whose download failed maps to ``None``.
+
+        Raises:
+            ValueError: If the task is not successful.
             FileNotFoundError: If output_dir doesn't exist.
         """
         if task.status != TaskStatus.SUCCESS:
             raise ValueError(f"Cannot download files from task with status: {task.status}")
-
         if not os.path.exists(output_dir):
             raise FileNotFoundError(f"Output directory not found: {output_dir}")
 
-        # If there's no rendered image, return None
-        if not task.output.rendered_image:
+        out = task.output
+        fields = [
+            ("model", out.model_url or out.model, "_model"),
+            ("base_model", out.base_model, "_base"),
+            ("pbr_model", out.pbr_model, "_pbr"),
+            ("rendered_image", out.rendered_image, "_rendered"),
+            ("image", out.image, "_image"),
+            ("front_view", out.front_view_url, "_front"),
+            ("left_view", out.left_view_url, "_left"),
+            ("back_view", out.back_view_url, "_back"),
+            ("right_view", out.right_view_url, "_right"),
+            ("uv_render", out.uv_render_url, "_uv_render"),
+            ("depth_image", out.depth_image_url, "_depth"),
+            ("rendered_video", out.rendered_video_url, "_video"),
+        ]
+
+        def extension(url: str, field_name: str) -> str:
+            ext = os.path.splitext(url.split('?')[0].split('/')[-1])[1]
+            if ext:
+                return ext
+            if field_name in _IMAGE_FIELDS:
+                return '.jpg'
+            if field_name in _VIDEO_FIELDS:
+                return '.mp4'
+            return '.glb'
+
+        by_url: Dict[str, str] = {}
+        aliases: List[tuple] = []
+        jobs: List[tuple] = []
+        for field_name, url, suffix in fields:
+            if not url:
+                continue
+            if url in by_url:
+                aliases.append((field_name, by_url[url]))
+                continue
+            by_url[url] = field_name
+            path = os.path.join(output_dir, f"{task.task_id}{suffix}{extension(url, field_name)}")
+            jobs.append((field_name, url, path))
+
+        results = await asyncio.gather(
+            *(self._download_with_ssl_retry(url, path) for _, url, path in jobs),
+            return_exceptions=True,
+        )
+        downloaded: Dict[str, Optional[str]] = {}
+        for (field_name, _, path), outcome in zip(jobs, results):
+            downloaded[field_name] = None if isinstance(outcome, Exception) else path
+        for field_name, source in aliases:
+            downloaded[field_name] = downloaded.get(source)
+        return {name: downloaded[name] for name, _, _ in fields if name in downloaded}
+
+    async def download_rendered_image(
+        self, task: Task, output_dir: str, filename: Optional[str] = None
+    ) -> Optional[str]:
+        """Download the rendered preview image of a successful task, or return None if absent."""
+        if task.status != TaskStatus.SUCCESS:
+            raise ValueError(f"Cannot download files from task with status: {task.status}")
+        if not os.path.exists(output_dir):
+            raise FileNotFoundError(f"Output directory not found: {output_dir}")
+        url = task.output.rendered_image
+        if not url:
             return None
-
-        # Determine the file extension from the URL
-        def get_extension(url: str) -> str:
-            # Remove query parameters
-            path = url.split('?')[0]
-            # Get the last path component
-            filename = path.split('/')[-1]
-            # Get the extension, or default to .jpg if none
-            ext = os.path.splitext(filename)[1]
-            return ext if ext else '.jpg'
-
-        # Get the file extension
-        ext = get_extension(task.output.rendered_image)
-
-        # Use provided filename or default
-        output_filename = filename if filename else f"{task.task_id}_rendered{ext}"
-        output_path = os.path.join(output_dir, output_filename)
-
-        # Download the file with SSL retry
-        await self._download_with_ssl_retry(task.output.rendered_image, output_path)
-
+        ext = os.path.splitext(url.split('?')[0].split('/')[-1])[1] or '.jpg'
+        output_path = os.path.join(output_dir, filename or f"{task.task_id}_rendered{ext}")
+        await self._download_with_ssl_retry(url, output_path)
         return output_path
 
-    _EXT_TO_STS_FORMAT = {
-        ".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".webp": "webp",
-        ".glb": "glb", ".obj": "obj", ".fbx": "fbx", ".stl": "stl",
-    }
-
-    async def upload_file(self, file_path: str) -> Dict[str, Any]:
-        """
-        Upload a file to the API via STS (preferred) or direct upload fallback.
-
-        Args:
-            file_path: Path to the file to upload.
-
-        Returns:
-            Dict with either ``{"object": {"bucket": ..., "key": ...}}`` (STS)
-            or ``{"file_token": ...}`` (legacy).
-
-        Raises:
-            TripoRequestError: If the upload fails.
-            FileNotFoundError: If the file doesn't exist.
-        """
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        ext = os.path.splitext(file_path)[1].lower()
-        sts_format = self._EXT_TO_STS_FORMAT.get(ext, "jpeg")
-
-        try:
-            import boto3
-            response = await self._impl._request(
-                'POST', "/upload/sts/token", json_data={"format": sts_format}
-            )
-            data = response["data"]
-            s3_client = boto3.client(
-                's3',
-                endpoint_url='https://' + data["s3_host"],
-                aws_access_key_id=data["sts_ak"],
-                aws_secret_access_key=data["sts_sk"],
-                aws_session_token=data["session_token"],
-            )
-            s3_client.upload_file(file_path, data["resource_bucket"], data["resource_uri"])
-            return {
-                "object": {
-                    "bucket": data["resource_bucket"],
-                    "key": data["resource_uri"],
-                }
-            }
-        except ImportError:
-            file_token = await self._impl.upload_file(file_path)
-            return {"file_token": file_token}
-
-
-    async def _image_to_file_content(self, image: str) -> Dict[str, Any]:
-        file_content = {
-            "type": "jpg"
-        }
-        # If image starts with http:// or https://, treat it as a URL
-        if image.startswith(("http://", "https://")):
-            file_content["url"] = image
-        # If image looks like a token (no file extension and not a path)
-        elif not os.path.exists(image) and re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', image, re.IGNORECASE):
-            file_content["file_token"] = image
-        else:
-            # Treat as a local file path
-            if not os.path.exists(image):
-                raise FileNotFoundError(f"Image file not found: {image}")
-            upload_result = await self.upload_file(image)
-            file_content.update(upload_result)
-        return file_content
-
-    def _get_passed_args(self):
-        frame = inspect.currentframe().f_back
-        func = getattr(self, frame.f_code.co_name)
-        sig = inspect.signature(func)
-        locals_dict = frame.f_locals.copy()
-        parameters = sig.parameters
-        passed = {}
-        for name, param in parameters.items():
-            if name in ("self", "cls"):
-                continue
-            if name in locals_dict:
-                if param.default is inspect.Parameter.empty:
-                    passed[name] = locals_dict[name]
-                else:
-                    if locals_dict[name] != param.default:
-                        passed[name] = locals_dict[name]
-        return passed
-
-    def _add_optional_params(self, task_data: Dict[str, Any], passed_args: Dict[str, Any], additional_exclude: set = None, **special_handlers) -> None:
-        """
-        Add optional parameters to task_data only if they were explicitly passed by the user.
-        Automatically excludes parameters that are already in task_data.
-
-        Args:
-            task_data: The dictionary to add parameters to.
-            additional_exclude: Additional set of parameter names to exclude from automatic addition
-                               (beyond those already in task_data).
-            **special_handlers: Special handling functions for specific parameters.
-                               Key is parameter name, value is a function that takes the parameter value
-                               and returns the value to add to task_data (or None to skip).
-        """
-        # Automatically exclude parameters that are already in task_data
-        exclude = set(task_data.keys())
-
-        # Add any additional exclusions
-        if additional_exclude:
-            exclude.update(additional_exclude)
-
-        for param_name, param_value in passed_args.items():
-            if param_name in exclude:
-                continue
-
-            if param_name in special_handlers:
-                result = special_handlers[param_name](param_value)
-                if result is not None:
-                    task_data[param_name] = result
-            else:
-                task_data[param_name] = param_value
+    # ------------------------------------------------------------------
+    # Generation
+    # ------------------------------------------------------------------
 
     async def text_to_model(
         self,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        model_version: Literal[
-            "P1-20260311", "Turbo-v1.0-20250506",
-            "v3.1-20260211", "v3.0-20250812", "v2.5-20250123",
-            "v2.0-20240919", "v1.4-20240625",
-        ] = "v2.5-20250123",
+        model_version: str = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
         image_seed: Optional[int] = None,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
-        geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
+        texture_quality: Optional[str] = "standard",
+        geometry_quality: Optional[str] = "standard",
         auto_size: Optional[bool] = False,
         quad: Optional[bool] = False,
         compress: Optional[bool] = False,
         generate_parts: Optional[bool] = False,
         smart_low_poly: Optional[bool] = False,
         export_uv: Optional[bool] = True,
+        **kwargs: Any,
     ) -> str:
         """
-        Create a text to 3D model task.
+        Create a text to 3D model task (``POST /v3/generation/text-to-model``).
 
-        Args:
-            prompt: The text prompt.
-            negative_prompt: The negative text prompt.
-            model_version: The model version to use.
-            face_limit: The maximum number of faces.
-            texture: Whether to generate texture.
-            pbr: Whether to generate PBR materials.
-            image_seed: The image seed.
-            model_seed: The model seed.
-            texture_seed: The texture seed.
-            texture_quality: The texture quality.
-            geometry_quality: The geometry quality.
-            auto_size: Whether to automatically determine the model size.
-            quad: Whether to generate a quad model.
-            compress: Whether to compress the model.
-            generate_parts: Whether to generate parts.
-            smart_low_poly: Whether to use smart low poly.
-            export_uv: Whether to perform UV unwrapping during generation. Default True.
-                       Set False to speed up generation; UV is then handled at texturing stage.
+        Extra keyword arguments (e.g. ``texture_version``, ``export_orientation``) are sent as-is.
+
         Returns:
             The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-            ValueError: If the prompt is empty.
         """
         if not prompt:
-            raise ValueError("Prompt is required.")
-
-        task_data = {
-            "type": "text_to_model",
-            "prompt": prompt,
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args=self._get_passed_args(),
-            compress=lambda val: 'geometry' if val else None
-        )
-
-        return await self.create_task(task_data)
+            raise TripoValidationError("Prompt is required.")
+        payload: Dict[str, Any] = {"prompt": prompt, "model": model_version}
+        payload.update(self._non_default("text_to_model", {
+            "negative_prompt": negative_prompt, "face_limit": face_limit, "texture": texture, "pbr": pbr,
+            "image_seed": image_seed, "model_seed": model_seed, "texture_seed": texture_seed,
+            "texture_quality": texture_quality, "geometry_quality": geometry_quality, "auto_size": auto_size,
+            "quad": quad, "generate_parts": generate_parts, "smart_low_poly": smart_low_poly,
+            "export_uv": export_uv,
+        }))
+        if compress:
+            payload["compress"] = "geometry"
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/text-to-model", payload)
 
     async def image_to_model(
         self,
-        image: str,
-        model_version: Literal[
-            "P1-20260311", "Turbo-v1.0-20250506",
-            "v3.1-20260211", "v3.0-20250812", "v2.5-20250123",
-            "v2.0-20240919", "v1.4-20240625",
-        ] = "v2.5-20250123",
+        image: InputLike,
+        model_version: str = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
-        geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
-        texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
+        texture_quality: Optional[str] = "standard",
+        geometry_quality: Optional[str] = "standard",
+        texture_alignment: Optional[str] = "original_image",
         auto_size: Optional[bool] = False,
-        orientation: Optional[Literal["default", "align_image"]] = "default",
+        orientation: Optional[str] = "default",
         quad: Optional[bool] = False,
         compress: Optional[bool] = False,
         generate_parts: Optional[bool] = False,
         smart_low_poly: Optional[bool] = False,
         enable_image_autofix: Optional[bool] = False,
         export_uv: Optional[bool] = True,
+        **kwargs: Any,
     ) -> str:
         """
-        Create an image to 3D model task.
+        Create an image to 3D model task (``POST /v3/generation/image-to-model``).
 
         Args:
-            image: The image input. Can be:
-                  - A path to a local image file
-                  - A URL to an image
-                  - An image token from previous upload
-            model_version: The model version to use.
-            face_limit: The maximum number of faces.
-            texture: Whether to generate texture.
-            pbr: Whether to generate PBR materials.
-            model_seed: The model seed.
-            texture_seed: The texture seed.
-            texture_quality: The texture quality.
-            geometry_quality: The geometry quality.
-            texture_alignment: The texture alignment.
-            auto_size: Whether to automatically determine the model size.
-            orientation: The orientation.
-            quad: Whether to generate a quad model.
-            compress: Whether to compress the model.
-            generate_parts: Whether to generate parts.
-            smart_low_poly: Whether to use smart low poly.
-            enable_image_autofix: Whether to auto-optimize input image quality. Default False.
-            export_uv: Whether to perform UV unwrapping during generation. Default True.
+            image: A local image path, an image URL, a ``file_token`` or the task_id of an
+                   image-producing task.
+
         Returns:
             The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-            FileNotFoundError: If the image file does not exist.
-            ValueError: If no image is provided.
         """
-        # Create the task
-        task_data = {
-            "type": "image_to_model",
-            "file": await self._image_to_file_content(image),
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args=self._get_passed_args(),
-            additional_exclude={"image"},
-            compress=lambda val: 'geometry' if val else None
-        )
-        return await self.create_task(task_data)
+        payload: Dict[str, Any] = {"input": await self._resolve_input(image), "model": model_version}
+        payload.update(self._non_default("image_to_model", {
+            "face_limit": face_limit, "texture": texture, "pbr": pbr, "model_seed": model_seed,
+            "texture_seed": texture_seed, "texture_quality": texture_quality,
+            "geometry_quality": geometry_quality, "texture_alignment": texture_alignment,
+            "auto_size": auto_size, "orientation": orientation, "quad": quad,
+            "generate_parts": generate_parts, "smart_low_poly": smart_low_poly,
+            "enable_image_autofix": enable_image_autofix, "export_uv": export_uv,
+        }))
+        if compress:
+            payload["compress"] = "geometry"
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/image-to-model", payload)
 
     async def multiview_to_model(
         self,
-        images: List[str],
-        model_version: Literal[
-            "P1-20260311",
-            "v3.1-20260211", "v3.0-20250812", "v2.5-20250123",
-            "v2.0-20240919",
-        ] = "v2.5-20250123",
+        images: Union[Sequence[Optional[InputLike]], str],
+        model_version: str = "v2.5-20250123",
         face_limit: Optional[int] = None,
         texture: Optional[bool] = True,
         pbr: Optional[bool] = True,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
-        geometry_quality: Optional[Literal["standard", "detailed"]] = "standard",
-        texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
+        texture_quality: Optional[str] = "standard",
+        geometry_quality: Optional[str] = "standard",
+        texture_alignment: Optional[str] = "original_image",
         auto_size: Optional[bool] = False,
-        orientation: Optional[Literal["default", "align_image"]] = "default",
+        orientation: Optional[str] = "default",
         quad: Optional[bool] = False,
         compress: Optional[bool] = False,
         generate_parts: Optional[bool] = False,
         smart_low_poly: Optional[bool] = False,
         export_uv: Optional[bool] = True,
+        **kwargs: Any,
     ) -> str:
         """
-        Create a 3D model from multiple view images.
+        Create a 3D model from multiple views (``POST /v3/generation/multiview-to-model``).
 
         Args:
-            images: List of images. Each image can be:
-                   - A path to a local image file
-                   - A URL to an image
-                   - An image token from previous upload
-            model_version: The model version to use.
-            face_limit: Maximum number of faces for the generated model.
-            texture: Whether to generate texture.
-            pbr: Whether to generate PBR materials.
-            model_seed: Seed for 3D model generation randomization.
-            texture_seed: Seed for texture generation randomization.
-            texture_quality: Quality of the texture.
-            geometry_quality: Quality of the geometry.
-            texture_alignment: How to align the texture.
-            auto_size: Whether to automatically determine the model size.
-            orientation: The orientation of the model.
-            quad: Whether to generate a quad model.
-            compress: Whether to compress the model.
-            generate_parts: Whether to generate parts.
-            smart_low_poly: Whether to use smart low poly.
+            images: ``[front, left, back, right]``; a missing view may be ``None``. Each entry is a
+                    local path, URL or ``file_token``. Alternatively pass the task_id of a finished
+                    ``generate_multiview_image`` task as a plain string.
+
         Returns:
             The task ID.
         """
-        tasks = []
-        for i, image in enumerate(images):
-            if image is not None:
-                tasks.append((i, self._image_to_file_content(image)))
-            else:
-                tasks.append((i, None))
+        if isinstance(images, str):
+            inputs: List[Any] = [{"task_id": images}]
+        else:
+            inputs = [None if item is None else await self._resolve_input(item) for item in images]
+            if not inputs or inputs[0] is None:
+                raise TripoValidationError("the front view (images[0]) is required")
+        payload: Dict[str, Any] = {"inputs": inputs, "model": model_version}
+        payload.update(self._non_default("multiview_to_model", {
+            "face_limit": face_limit, "texture": texture, "pbr": pbr, "model_seed": model_seed,
+            "texture_seed": texture_seed, "texture_quality": texture_quality,
+            "geometry_quality": geometry_quality, "texture_alignment": texture_alignment,
+            "auto_size": auto_size, "orientation": orientation, "quad": quad,
+            "generate_parts": generate_parts, "smart_low_poly": smart_low_poly, "export_uv": export_uv,
+        }))
+        if compress:
+            payload["compress"] = "geometry"
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/multiview-to-model", payload)
 
-        file_tokens = [{} for _ in range(len(images))]
-        for i, t in tasks:
-            if t is not None:
-                file_tokens[i] = await t
-
-        task_data = {
-            "type": "multiview_to_model",
-            "files": file_tokens,
-        }
-
-        self._add_optional_params(
-            task_data,
-            passed_args=self._get_passed_args(),
-            additional_exclude={"images"},
-            compress=lambda val: 'geometry' if val else None,
-        )
-
-        return await self.create_task(task_data)
-
-    async def text_to_image(
-        self,
-        prompt: str,
-        negative_prompt: Optional[str] = None,
-    ) -> str:
+    async def text_to_image(self, prompt: str, negative_prompt: Optional[str] = None, **kwargs: Any) -> str:
         """
-        Create a text-to-image generation task.
+        Create a text-to-image task (``POST /v3/generation/text-to-image``).
 
-        Args:
-            prompt: Text input that directs the image generation (max 1024 chars).
-            negative_prompt: Reverse guidance to exclude unwanted content (max 255 chars).
-
-        Returns:
-            The task ID.
+        Extra keyword arguments such as ``model``, ``size``, ``aspect_ratio`` or ``output_format``
+        are sent as-is.
         """
         if not prompt:
-            raise ValueError("Prompt is required.")
+            raise TripoValidationError("Prompt is required.")
+        payload: Dict[str, Any] = {"prompt": prompt}
+        if negative_prompt is not None:
+            payload["negative_prompt"] = negative_prompt
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/text-to-image", payload)
 
-        task_data: Dict[str, Any] = {
-            "type": "text_to_image",
-            "prompt": prompt,
-        }
-        self._add_optional_params(task_data, passed_args=self._get_passed_args())
-        return await self.create_task(task_data)
+    async def image_to_image(
+        self,
+        input: Optional[InputLike] = None,
+        *,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        inputs: Optional[Sequence[InputLike]] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Transform one or more reference images (``POST /v3/generation/image-to-image``)."""
+        payload: Dict[str, Any] = {}
+        if input is not None:
+            payload["input"] = await self._resolve_input(input)
+        if inputs is not None:
+            payload["inputs"] = [await self._resolve_input(item) for item in inputs]
+        if not payload:
+            raise TripoValidationError("input or inputs is required")
+        if prompt is not None:
+            payload["prompt"] = prompt
+        if model is not None:
+            payload["model"] = model
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/image-to-image", payload)
 
     async def generate_image(
         self,
         prompt: Optional[str] = None,
         model_version: Optional[str] = None,
-        file: Optional[str] = None,
-        files: Optional[List[str]] = None,
+        file: Optional[InputLike] = None,
+        files: Optional[List[InputLike]] = None,
         template: Optional[str] = None,
         t_pose: Optional[bool] = False,
         sketch_to_render: Optional[bool] = False,
+        **kwargs: Any,
     ) -> str:
         """
-        Advanced image generation with multi-model, multi-image-reference and template support.
-
-        Available model_version values differ by region:
-          - Overseas (ov): flux.1_kontext_pro (default), flux.1_dev, gpt_4o, z_image,
-            gpt_image_1.5, midjourney, gemini_2.5_flash_image_preview,
-            gemini_3_pro_image_preview, gemini_3.1_flash_image_preview
-          - China (cn): seedream_v4 (default), seedream_v5, flux.1_kontext_pro,
-            flux.1_dev, gemini_2.5_flash_image_preview,
-            gemini_3_pro_image_preview, gemini_3.1_flash_image_preview
+        Image generation with reference images and templates (apiv3 ``image-to-image``).
 
         Args:
-            prompt: Text input (max 1024 chars). Optional when template + file are both provided.
-            model_version: Image generation model. If None, the server picks the region default.
-            file: Single reference image (path / URL / file_token).
-            files: Multiple reference images (path / URL / file_token each).
-            template: Image template slug (e.g. "t-pose", "3d-enhance").
-            t_pose: Transform subject to T-pose while preserving features.
-            sketch_to_render: Transform a sketch into a rendered image.
-
-        Returns:
-            The task ID.
+            prompt: Text instruction. Optional when ``template`` and ``file`` are both provided.
+            model_version: Image model; None lets the server choose its default.
+            file: Single reference image (path / URL / file_token / task_id).
+            files: Multiple reference images.
+            template: Image template slug (e.g. "t-pose").
+            t_pose: Transform the subject to a T-pose.
+            sketch_to_render: Render a sketch.
         """
-        task_data: Dict[str, Any] = {"type": "generate_image"}
+        extra = self._non_default("generate_image", {
+            "template": template, "t_pose": t_pose, "sketch_to_render": sketch_to_render,
+        })
+        extra.update(kwargs)
+        return await self.image_to_image(file, prompt=prompt, model=model_version, inputs=files, **extra)
 
-        if prompt is not None:
-            task_data["prompt"] = prompt
+    async def image_to_multiview(self, input: InputLike, **kwargs: Any) -> str:
+        """Generate front/left/back/right views (``POST /v3/generation/image-to-multiview``)."""
+        payload: Dict[str, Any] = {"input": await self._resolve_input(input)}
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/image-to-multiview", payload)
 
-        passed = self._get_passed_args()
+    async def generate_multiview_image(self, image: InputLike, **kwargs: Any) -> str:
+        """Generate four views from a single image; same as :meth:`image_to_multiview`."""
+        return await self.image_to_multiview(image, **kwargs)
 
-        if file is not None:
-            task_data["file"] = await self._image_to_file_content(file)
+    async def edit_multiview(self, input: str, prompts: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Edit views of an ``image_to_multiview`` task (``POST /v3/generation/edit-multiview``)."""
+        payload: Dict[str, Any] = {"input": input, "prompts": list(prompts)}
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/edit-multiview", payload)
 
-        if files is not None:
-            task_data["files"] = list(
-                await asyncio.gather(*[self._image_to_file_content(f) for f in files])
-            )
+    async def edit_multiview_image(self, original_task_id: str, prompts: List[Dict[str, str]]) -> str:
+        """Edit views of a multiview task; same as :meth:`edit_multiview`."""
+        return await self.edit_multiview(original_task_id, prompts)
 
-        self._add_optional_params(
-            task_data,
-            passed_args=passed,
-            additional_exclude={"file", "files", "prompt"},
-        )
-        return await self.create_task(task_data)
+    async def image_to_splat(self, image: InputLike, model_seed: Optional[int] = None, **kwargs: Any) -> str:
+        """Generate a Gaussian splat from an image (``POST /v3/generation/image-to-splat``)."""
+        payload: Dict[str, Any] = {"input": await self._resolve_input(image)}
+        if model_seed is not None:
+            payload["model_seed"] = model_seed
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/image-to-splat", payload)
 
-    async def generate_multiview_image(
+    async def image_to_depth(
         self,
-        image: str,
+        image: InputLike,
+        kind: Optional[str] = None,
+        process_res: Optional[int] = None,
+        **kwargs: Any,
     ) -> str:
         """
-        Generate four-view images (front / left / back / right) from a single input image.
-
-        The output can be chained into ``multiview_to_model(original_task_id=...)``
-        for a controllable image-to-3D pipeline.
+        Estimate a depth map from an image (``POST /v3/generation/image-to-depth``).
 
         Args:
-            image: Input image (path / URL / file_token).
-
-        Returns:
-            The task ID.
+            kind: ``gray`` (server default) or ``color``.
+            process_res: Processing resolution, 126-2016 (server default 504).
         """
-        task_data: Dict[str, Any] = {
-            "type": "generate_multiview_image",
-            "file": await self._image_to_file_content(image),
-        }
-        return await self.create_task(task_data)
+        payload: Dict[str, Any] = {"input": await self._resolve_input(image)}
+        if kind is not None:
+            payload["kind"] = kind
+        if process_res is not None:
+            payload["process_res"] = process_res
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/generation/image-to-depth", payload)
 
-    async def edit_multiview_image(
-        self,
-        original_task_id: str,
-        prompts: List[Dict[str, str]],
-    ) -> str:
+    # ------------------------------------------------------------------
+    # Model post-processing
+    # ------------------------------------------------------------------
+
+    async def import_model(self, file: InputLike, **kwargs: Any) -> str:
         """
-        Edit specific views of a multiview image set produced by ``generate_multiview_image``.
+        Import an external 3D model (``POST /v3/models/import``).
 
         Args:
-            original_task_id: Task ID from a completed ``generate_multiview_image`` task.
-            prompts: Edit instructions per view, e.g.
-                     ``[{"view": "front", "prompt": "change shirt to red"}]``.
-                     Valid views: front, left, back, right.
-
-        Returns:
-            The task ID.
+            file: A local model file (uploaded first), a model URL, or a ``file_token``.
         """
-        task_data: Dict[str, Any] = {
-            "type": "edit_multiview_image",
-            "original_task_id": original_task_id,
-            "prompts": prompts,
-        }
-        return await self.create_task(task_data)
-
-    async def import_model(
-        self,
-        file: str,
-    ) -> str:
-        """
-        Import an external 3D model file (GLB / OBJ / FBX / STL).
-
-        The imported model can then be used as input for texture_model, rig_model, etc.
-
-        Args:
-            file: Path to a local 3D model file. The file is auto-uploaded via STS.
-
-        Returns:
-            The task ID.
-        """
-        upload_result = await self.upload_file(file)
-        task_data: Dict[str, Any] = {
-            "type": "import_model",
-            "file": upload_result,
-        }
-        return await self.create_task(task_data)
+        payload: Dict[str, Any] = {"input": await self._resolve_input(file)}
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/models/import", payload)
 
     async def convert_model(
         self,
         original_model_task_id: str,
-        format: Literal["GLTF", "USDZ", "FBX", "OBJ", "STL", "3MF"],
+        format: str,
         quad: Optional[bool] = False,
         force_symmetry: Optional[bool] = False,
         face_limit: Optional[int] = None,
         flatten_bottom: Optional[bool] = False,
         flatten_bottom_threshold: Optional[float] = 0.01,
         texture_size: Optional[int] = 4096,
-        texture_format: Optional[Literal["BMP", "DPX", "HDR", "JPEG", "OPEN_EXR", "PNG", "TARGA", "TIFF", "WEBP"]] = "JPEG",
+        texture_format: Optional[str] = "JPEG",
         scale_factor: Optional[float] = 1.0,
         pivot_to_center_bottom: Optional[bool] = False,
         with_animation: Optional[bool] = True,
@@ -936,89 +744,29 @@ class TripoClient:
         bake: Optional[bool] = True,
         part_names: Optional[List[str]] = None,
         export_vertex_colors: Optional[bool] = False,
-        fbx_preset: Optional[Literal["blender", "mixamo", "3dsmax"]] = "blender",
-        export_orientation: Optional[Literal["+x", "+y", "-x", "-y"]] = "+x",
+        fbx_preset: Optional[str] = "blender",
+        export_orientation: Optional[str] = "+x",
         animate_in_place: Optional[bool] = False,
+        **kwargs: Any,
     ) -> str:
         """
-        Convert a 3D model to different format.
+        Convert a model to another format (``POST /v3/models/convert``).
 
-        Args:
-            original_model_task_id: The task ID of the original model.
-            format: Output format. One of: "GLTF", "USDZ", "FBX", "OBJ", "STL", "3MF"
-            quad: Whether to generate quad mesh. Default: False
-            force_symmetry: Whether to force model symmetry. Default: False
-            face_limit: Maximum number of faces.
-            flatten_bottom: Whether to flatten the bottom of the model. Default: False
-            flatten_bottom_threshold: Threshold for bottom flattening. Default: 0.01
-            texture_size: Size of the texture. Default: 4096
-            texture_format: Format of the texture. One of: "BMP", "DPX", "HDR", "JPEG", "OPEN_EXR",
-                          "PNG", "TARGA", "TIFF", "WEBP". Default: "JPEG"
-            scale_factor: Scale factor for the model. Default: 1.0
-            pivot_to_center_bottom: Whether to move pivot point to center bottom. Default: False
-            with_animation: Whether to export animation. Default: False
-            pack_uv: Whether to pack UV. Default: False
-            bake: Whether to bake the model. Default: True
-            part_names: List of part names to export.
-            export_vertex_colors: Whether to export vertex colors.
-            fbx_preset: Preset for FBX export. One of: "blender", "mixamo", "3dsmax".
-            export_orientation: Orientation for export. One of: "+x", "+y", "-x", "-y".
-            animate_in_place: Whether to animate in place.
-        Returns:
-            The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
+        ``face_limit`` values <= 0 mean "no limit" and are not sent.
         """
-        task_data = {
-            "type": "convert_model",
-            "original_model_task_id": original_model_task_id,
-            "format": format,
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args = self._get_passed_args(),
-        )
-
-        return await self.create_task(task_data)
-
-    async def stylize_model(
-        self,
-        original_model_task_id: str,
-        style: PostStyle,
-        block_size: Optional[int] = 80
-    ) -> str:
-        """
-        Apply a style to an existing 3D model.
-
-        Args:
-            original_model_task_id: The task ID of the original model.
-            style: Style to apply from PostStyle enum.
-            block_size: Size of the blocks for stylization. Default: 80
-
-        Returns:
-            The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        task_data = {
-            "type": "stylize_model",
-            "original_model_task_id": original_model_task_id,
-            "style": style,
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args = self._get_passed_args(),
-        )
-
-        return await self.create_task(task_data)
+        payload: Dict[str, Any] = {"input": original_model_task_id, "format": format}
+        payload.update(self._non_default("convert_model", {
+            "quad": quad, "force_symmetry": force_symmetry,
+            "face_limit": face_limit if face_limit is not None and face_limit > 0 else None,
+            "flatten_bottom": flatten_bottom, "flatten_bottom_threshold": flatten_bottom_threshold,
+            "texture_size": texture_size, "texture_format": texture_format, "scale_factor": scale_factor,
+            "pivot_to_center_bottom": pivot_to_center_bottom, "with_animation": with_animation,
+            "pack_uv": pack_uv, "bake": bake, "part_names": part_names or None,
+            "export_vertex_colors": export_vertex_colors, "fbx_preset": fbx_preset,
+            "export_orientation": export_orientation, "animate_in_place": animate_in_place,
+        }))
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/models/convert", payload)
 
     async def texture_model(
         self,
@@ -1027,335 +775,342 @@ class TripoClient:
         pbr: Optional[bool] = True,
         model_seed: Optional[int] = None,
         texture_seed: Optional[int] = None,
-        texture_quality: Optional[Literal["standard", "detailed"]] = "standard",
-        texture_alignment: Optional[Literal["original_image", "geometry"]] = "original_image",
+        texture_quality: Optional[str] = "standard",
+        texture_alignment: Optional[str] = "original_image",
         part_names: Optional[List[str]] = None,
         compress: Optional[bool] = False,
         bake: Optional[bool] = True,
         text_prompt: Optional[str] = None,
-        image_prompt: Optional[str] = None,
-        style_image: Optional[str] = None,
-        model_version: Optional[Literal["v2.5-20250123", "v3.0-20250812"]] = "v2.5-20250123",
+        image_prompt: Optional[InputLike] = None,
+        style_image: Optional[InputLike] = None,
+        model_version: Optional[str] = "v2.5-20250123",
+        **kwargs: Any,
     ) -> str:
         """
-        Generate new texture for an existing 3D model.
+        Generate a new texture for a model (``POST /v3/models/texture``).
 
         Args:
-            original_model_task_id: The task ID of the original model.
-            texture: Whether to generate texture. Default: True
-            pbr: Whether to generate PBR materials. Default: True
-            model_seed: Seed for model generation randomization.
-            texture_seed: Seed for texture generation randomization.
-            texture_quality: Quality of the texture. One of:
-                          - "standard"
-                          - "detailed"
-            texture_alignment: How to align the texture. One of:
-                            - "original_image"
-                            - "geometry"
-            Default: "original_image"
-            part_names: List of part names to texture.
-            compress: Whether to compress the model.
-            bake: Whether to bake the model.
-            text_prompt: Text prompt for texture generation.
-            image_prompt: Image prompt for texture generation. It Can be:
-                  - A path to a local image file
-                  - A URL to an image
-                  - An image token from previous upload
-            style_image: Style image for texture generation. The same format as image_prompt.
-            model_version: The model version to use.
-        Returns:
-            The task ID.
+            original_model_task_id: Task ID of the model to texture (a model URL or file_token
+                                    of an imported file also works).
+            text_prompt / image_prompt / style_image: Texture guidance; images may be local
+                                    paths, URLs or file_tokens.
+            model_version: ``v2.5-20250123``, ``v3.0-20250812`` or ``v3.5-20260815``.
 
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
+        Extra keyword arguments (e.g. ``delight``) are sent as-is.
         """
-        task_data = {
-            "type": "texture_model",
-            "original_model_task_id": original_model_task_id,
-        }
+        payload: Dict[str, Any] = {"input": original_model_task_id}
+        if model_version is not None:
+            payload["model"] = model_version
+        payload.update(self._non_default("texture_model", {
+            "texture": texture, "pbr": pbr, "model_seed": model_seed, "texture_seed": texture_seed,
+            "texture_quality": texture_quality, "texture_alignment": texture_alignment,
+            "part_names": part_names or None, "bake": bake,
+        }))
+        if compress:
+            payload["compress"] = "geometry"
+        texture_prompt: Dict[str, Any] = {}
+        if text_prompt:
+            texture_prompt["text"] = text_prompt
+        if image_prompt is not None:
+            texture_prompt["image"] = await self._resolve_input(image_prompt)
+        if style_image is not None:
+            texture_prompt["style_image"] = await self._resolve_input(style_image)
+        if texture_prompt:
+            payload["texture_prompt"] = texture_prompt
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/models/texture", payload)
 
-        passed_args = self._get_passed_args()
+    async def refine_model(self, draft_model_task_id: str) -> str:
+        """
+        Removed: refine is no longer supported by Tripo. Always raises; no request is sent.
 
-        # Handle texture_prompt special case first
-        if 'text_prompt' in passed_args or 'image_prompt' in passed_args or 'style_image' in passed_args:
-            task_data["texture_prompt"] = {}
-            if 'text_prompt' in passed_args:
-                task_data["texture_prompt"]["text"] = text_prompt
+        Kept only so callers built for 0.x (e.g. ComfyUI-Tripo 1.3.x) get this explanation instead of
+        an ``AttributeError``.
+        """
+        raise TripoValidationError(_RETIRED.format(name="refine_model"))
 
-            if 'image_prompt' in passed_args:
-                task_data["texture_prompt"]["image"] = await self._image_to_file_content(image_prompt)
+    async def stylize_model(
+        self, original_model_task_id: str, style: Union[PostStyle, str], block_size: Optional[int] = 80
+    ) -> str:
+        """
+        Removed: stylize is no longer supported by Tripo. Always raises; no request is sent.
 
-            if 'style_image' in passed_args:
-                task_data["texture_prompt"]["style_image"] = await self._image_to_file_content(style_image)
+        Kept only so callers built for 0.x (e.g. ComfyUI-Tripo 1.3.x) get this explanation instead of
+        an ``AttributeError``.
+        """
+        raise TripoValidationError(_RETIRED.format(name="stylize_model"))
 
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args=passed_args,
-            additional_exclude={'text_prompt', 'image_prompt', 'style_image'},
-            compress=lambda val: 'geometry' if val else None
-        )
+    # ------------------------------------------------------------------
+    # Animation
+    # ------------------------------------------------------------------
 
-        return await self.create_task(task_data)
+    async def rig_check(self, input: str, **kwargs: Any) -> str:
+        """Check whether a model can be rigged (``POST /v3/animations/rig-check``).
 
-    async def refine_model(
+        The finished task reports ``output.riggable`` and ``output.rig_type``.
+        """
+        payload: Dict[str, Any] = {"input": input}
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/animations/rig-check", payload)
+
+    async def check_riggable(self, original_model_task_id: str) -> str:
+        """Check whether a model can be rigged; same as :meth:`rig_check`."""
+        return await self.rig_check(original_model_task_id)
+
+    async def rig(
         self,
-        draft_model_task_id: str
+        input: str,
+        *,
+        model: Optional[str] = None,
+        rig_type: Optional[Union[RigType, str]] = None,
+        spec: Optional[Union[RigSpec, str]] = None,
+        out_format: Optional[str] = None,
+        **kwargs: Any,
     ) -> str:
+        """Rig a model (``POST /v3/animations/rig``).
+
+        ``model``: ``v1.0-20240301`` (server default), ``v2.5-20260210`` or ``v3.0-20260909``.
+        ``spec`` ``unity`` / ``unreal`` / ``vrm`` need ``v2.5-20260210`` or ``v3.0-20260909``.
+        Extra keyword arguments are sent as-is.
         """
-        Refine an existing 3D model.
-
-        Args:
-            draft_model_task_id: The task ID of the draft model to refine.
-
-        Returns:
-            The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        task_data = {
-            "type": "refine_model",
-            "draft_model_task_id": draft_model_task_id
-        }
-
-        return await self.create_task(task_data)
-
-    async def check_riggable(
-        self,
-        original_model_task_id: str
-    ) -> str:
-        """
-        Check if a model can be rigged.
-
-        Args:
-            original_model_task_id: The task ID of the original model.
-
-        Returns:
-            The task ID for the rigging check task.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        task_data = {
-            "type": "animate_prerigcheck",
-            "original_model_task_id": original_model_task_id
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args = self._get_passed_args(),
-        )
-
-        return await self.create_task(task_data)
+        payload: Dict[str, Any] = {"input": input}
+        if model is not None:
+            if model in _LEGACY_RIG_MODEL_VERSIONS:
+                replacement = _LEGACY_RIG_MODEL_VERSIONS[model]
+                warnings.warn(
+                    f"rig model {model} is retired on apiv3; using {replacement} as v2 did", UserWarning, stacklevel=2
+                )
+                model = replacement
+            payload["model"] = model
+        for key, value in (("rig_type", rig_type), ("spec", spec), ("out_format", out_format)):
+            if value is not None:
+                payload[key] = _enum_value(value)
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/animations/rig", payload)
 
     async def rig_model(
         self,
         original_model_task_id: str,
-        model_version: Optional[Literal["v1.0-20240301", "v2.0-20250506"]] = "v1.0-20240301",
-        out_format: Optional[Literal["glb", "fbx"]] = "glb",
-        rig_type: Optional[RigType] = RigType.BIPED,
-        spec: Optional[RigSpec] = RigSpec.TRIPO,
+        model_version: Optional[str] = "v1.0-20240301",
+        out_format: Optional[str] = "glb",
+        rig_type: Optional[Union[RigType, str]] = RigType.BIPED,
+        spec: Optional[Union[RigSpec, str]] = RigSpec.TRIPO,
+        **kwargs: Any,
     ) -> str:
         """
-        Rig a 3D model for animation.
+        Rig a model for animation; see :meth:`rig`.
 
-        Args:
-            original_model_task_id: The task ID of the original model.
-            out_format: Output format, either "glb" or "fbx". Default: "glb"
-            rig_type: Rigging type, either "biped" or "quadruped" or "hexapod" or "octopod" or "avian" or "serpentine" or "aquatic" or "others". Default: "biped"
-            spec: Rigging specification, either "mixamo" or "tripo". Default: "tripo"
-
-        Returns:
-            The task ID for the rigging task.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-            ValueError: If parameters are invalid.
+        ``model_version`` ``v2.0-20250506`` (retired) is sent as ``v2.5-20260210``, exactly as
+        the v2 API did.
         """
-        task_data = {
-            "type": "animate_rig",
-            "original_model_task_id": original_model_task_id,
-        }
+        extra = self._non_default("rig_model", {"out_format": out_format, "rig_type": rig_type, "spec": spec})
+        extra.update(kwargs)
+        return await self.rig(original_model_task_id, model=model_version, **extra)
 
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args = self._get_passed_args(),
-        )
+    async def retarget(
+        self,
+        input: str,
+        *,
+        animation: Optional[Union[Animation, str]] = None,
+        animations: Optional[Sequence[Union[Animation, str]]] = None,
+        out_format: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Apply preset animations to a rigged model (``POST /v3/animations/retarget``).
 
-        return await self.create_task(task_data)
+        Pass ``animation`` or up to 5 ``animations``. Extra keyword arguments
+        (``export_with_geometry``, ``animate_in_place``) are sent as-is.
+        """
+        payload: Dict[str, Any] = {"input": input}
+        if animation is not None:
+            payload["animation"] = _enum_value(animation)
+        if animations is not None:
+            payload["animations"] = [_enum_value(item) for item in animations]
+        if "animation" not in payload and "animations" not in payload:
+            raise TripoValidationError("animation or animations is required")
+        if out_format is not None:
+            payload["out_format"] = out_format
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/animations/retarget", payload)
 
     async def retarget_animation(
         self,
         original_model_task_id: str,
-        animation: Union[Animation, List[Animation]],
-        out_format: Optional[Literal["glb", "fbx"]] = "glb",
+        animation: Union[Animation, str, List[Union[Animation, str]]],
+        out_format: Optional[str] = "glb",
         bake_animation: Optional[bool] = True,
         export_with_geometry: Optional[bool] = False,
         animate_in_place: Optional[bool] = False,
+        **kwargs: Any,
     ) -> str:
         """
-        Apply an animation to a rigged model.
+        Apply an animation to a rigged model; see :meth:`retarget`.
 
-        Args:
-            original_model_task_id: The task ID of the original model.
-            animation: The animation to apply from Animation enum.
-            out_format: Output format, either "glb" or "fbx". Default: "glb"
-            bake_animation: Whether to bake the animation. Default: True
-            export_with_geometry: Whether to export the animation with geometry. Default: False
-        Returns:
-            The task ID for the animation retargeting task.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-            ValueError: If parameters are invalid.
+        ``animation`` may be a single preset or a list. ``bake_animation`` is accepted for
+        compatibility but apiv3 no longer uses it, so it is not sent.
         """
-        task_data = {
-            "type": "animate_retarget",
-            "original_model_task_id": original_model_task_id,
-        }
+        if bake_animation is False:
+            _deprecated("bake_animation is ignored by apiv3 and will be removed in tripo3d 2.0.0")
+        extra = self._non_default("retarget_animation", {
+            "export_with_geometry": export_with_geometry, "animate_in_place": animate_in_place,
+        })
+        extra.update(kwargs)
+        out = out_format if out_format != "glb" else None
+        if isinstance(animation, (list, tuple)):
+            return await self.retarget(original_model_task_id, animations=animation, out_format=out, **extra)
+        return await self.retarget(original_model_task_id, animation=animation, out_format=out, **extra)
 
-        # Handle animation parameter
-        if isinstance(animation, list):
-            task_data["animations"] = animation
-        else:
-            task_data["animation"] = animation
+    # ------------------------------------------------------------------
+    # Mesh
+    # ------------------------------------------------------------------
 
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args = self._get_passed_args(),
-            additional_exclude={'animation'}
-        )
+    async def mesh_segment(
+        self,
+        input: str,
+        *,
+        model: Optional[str] = None,
+        segmentation_granularity: Optional[str] = None,
+        ref_image: Optional[InputLike] = None,
+        split_by_connectivity: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Segment a mesh (``POST /v3/mesh/segment``).
 
-        return await self.create_task(task_data)
+        ``model``: ``v1.0-20250506`` (server default) or ``v2.0-20260430``; ``ref_image`` and the
+        other options are for v2.0 only.
+        """
+        payload: Dict[str, Any] = {"input": input}
+        if model is not None:
+            payload["model"] = model
+        if segmentation_granularity:
+            payload["segmentation_granularity"] = segmentation_granularity
+        if ref_image is not None:
+            payload["ref_image"] = await self._resolve_input(ref_image)
+        if split_by_connectivity is not None:
+            payload["split_by_connectivity"] = split_by_connectivity
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/mesh/segment", payload)
 
     async def mesh_segmentation(
         self,
         original_model_task_id: str,
-        model_version: Optional[Literal["v1.0-20250506", "v2.0-20260430"]] = "v1.0-20250506",
+        model_version: Optional[str] = "v1.0-20250506",
         segmentation_granularity: Optional[str] = None,
-        ref_image: Optional[str] = None,
+        ref_image: Optional[InputLike] = None,
         split_by_connectivity: Optional[bool] = None,
+        **kwargs: Any,
     ) -> str:
+        """Segment a 3D model; see :meth:`mesh_segment`."""
+        return await self.mesh_segment(
+            original_model_task_id,
+            model=model_version,
+            segmentation_granularity=segmentation_granularity,
+            ref_image=ref_image,
+            split_by_connectivity=split_by_connectivity,
+            **kwargs,
+        )
+
+    async def mesh_complete(
+        self,
+        input: str,
+        *,
+        model: Optional[str] = None,
+        part_names: Optional[Sequence[str]] = None,
+        completion_mode: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Complete a segmented mesh (``POST /v3/mesh/complete``).
+
+        ``input`` must be a ``mesh_segmentation`` task; ``completion_mode`` is ``ai_completion``
+        or ``quick_cap``.
         """
-        Segment a 3D model.
-
-        Args:
-            original_model_task_id: The task ID of the original model.
-            model_version: The model version to use.
-            segmentation_granularity: Granularity for segment v2 (simple/balanced/detailed).
-            ref_image: Local file path or apiv3 file_<uuid> token (segment v2 only).
-            split_by_connectivity: Whether to split by connectivity (segment v2 only).
-        Returns:
-            The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        if model_version == self.SEGMENT_V2_MODEL:
-            body: Dict[str, Any] = {
-                "type": "mesh_segmentation",
-                "model": model_version,
-                "input": original_model_task_id,
-            }
-            if segmentation_granularity:
-                body["segmentation_granularity"] = segmentation_granularity
-            if ref_image:
-                if os.path.isfile(ref_image):
-                    ref_image = await self._v3_upload_file(ref_image)
-                body["ref_image"] = ref_image
-            if split_by_connectivity is not None:
-                body["split_by_connectivity"] = split_by_connectivity
-            response = await self._v3_request("POST", "/v3/mesh/segment", json_data=body)
-            return response["data"]["task_id"]
-
-        task_data = {
-            "type": "mesh_segmentation",
-            "original_model_task_id": original_model_task_id,
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(task_data, passed_args=self._get_passed_args())
-
-        return await self.create_task(task_data)
+        payload: Dict[str, Any] = {"input": input}
+        if model is not None:
+            payload["model"] = model
+        if part_names:
+            payload["part_names"] = list(part_names)
+        if completion_mode is not None:
+            payload["completion_mode"] = completion_mode
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/mesh/complete", payload)
 
     async def mesh_completion(
         self,
         original_model_task_id: str,
-        model_version: Optional[Literal["v1.0-20250506"]] = "v1.0-20250506",
+        model_version: Optional[str] = "v1.0-20250506",
         part_names: Optional[List[str]] = None,
+        completion_mode: Optional[str] = None,
+        **kwargs: Any,
     ) -> str:
-        """
-        Complete a 3D model.
-
-        Args:
-            original_model_task_id: The task ID of the original model.
-            model_version: The model version to use.
-            part_names: List of part names to complete.
-        Returns:
-            The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        task_data = {
-            "type": "mesh_completion",
-            "original_model_task_id": original_model_task_id,
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args = self._get_passed_args(),
+        """Complete a segmented 3D model; see :meth:`mesh_complete`."""
+        return await self.mesh_complete(
+            original_model_task_id,
+            model=model_version,
+            part_names=part_names,
+            completion_mode=completion_mode,
+            **kwargs,
         )
 
-        return await self.create_task(task_data)
+    async def mesh_decimate(
+        self,
+        input: str,
+        *,
+        model: Optional[str] = None,
+        face_limit: Optional[int] = None,
+        quad: Optional[bool] = None,
+        bake: Optional[bool] = None,
+        part_names: Optional[Sequence[str]] = None,
+        smart_uv: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Retopologize / reduce faces (``POST /v3/mesh/decimate``).
+
+        ``model``: ``v1.0``, ``v2.0`` (server default) or ``v3.0``; ``smart_uv`` requires ``v3.0``.
+        """
+        payload: Dict[str, Any] = {"input": input}
+        if model is not None:
+            payload["model"] = _LEGACY_LOWPOLY_MODEL_VERSIONS.get(model, model)
+        for key, value in (("face_limit", face_limit), ("quad", quad), ("bake", bake), ("smart_uv", smart_uv)):
+            if value is not None:
+                payload[key] = value
+        if part_names:
+            payload["part_names"] = list(part_names)
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/mesh/decimate", payload)
 
     async def smart_lowpoly(
         self,
         original_model_task_id: str,
-        model_version: Optional[Literal["P-v2.0-20251226"]] = "P-v2.0-20251226",
+        model_version: Optional[str] = None,
         quad: Optional[bool] = False,
         part_names: Optional[List[str]] = None,
         face_limit: Optional[int] = None,
         bake: Optional[bool] = True,
+        smart_uv: Optional[bool] = None,
+        **kwargs: Any,
     ) -> str:
-        """
-        Convert a high poly model to a low poly model.
-
-        Args:
-            original_model_task_id: The task ID of the original model.
-            model_version: The model version to use.
-            quad: Whether to generate a quad model.
-            part_names: List of part names to complete.
-            face_limit: The maximum number of faces.
-            bake: Whether to bake the model.
-        Returns:
-            The task ID.
-
-        Raises:
-            TripoRequestError: If the request fails.
-            TripoAPIError: If the API returns an error.
-        """
-        task_data = {
-            "type": "highpoly_to_lowpoly",
-            "original_model_task_id": original_model_task_id,
-        }
-
-        # Add optional parameters that were explicitly passed
-        self._add_optional_params(
-            task_data,
-            passed_args = self._get_passed_args(),
+        """Convert a high-poly model to low-poly; see :meth:`mesh_decimate`."""
+        extra = self._non_default("smart_lowpoly", {"quad": quad, "bake": bake})
+        extra.update(kwargs)
+        return await self.mesh_decimate(
+            original_model_task_id,
+            model=model_version,
+            face_limit=face_limit,
+            part_names=part_names,
+            smart_uv=smart_uv,
+            **extra,
         )
 
-        return await self.create_task(task_data)
+    async def mesh_uv(self, original_model_task_id: str, model_version: Optional[str] = None, **kwargs: Any) -> str:
+        """
+        Smart UV unwrap (``POST /v3/mesh/uv``).
+
+        The finished task carries ``output.model_url`` and a UV atlas preview
+        ``output.uv_render_url``. Extra keyword arguments (e.g. ``export_orientation``) are sent
+        as-is.
+        """
+        payload: Dict[str, Any] = {"input": original_model_task_id}
+        if model_version is not None:
+            payload["model"] = model_version
+        self._merge_extra(payload, kwargs)
+        return await self._submit("/v3/mesh/uv", payload)

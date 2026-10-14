@@ -1,14 +1,35 @@
 """
 Tripo 3D Generation API Client
 
-A Python client for the Tripo 3D Generation API.
+A Python client for the Tripo apiv3 API.
 """
 
 import os
 import threading
+from ._version import __version__
 from .client import TripoClient
-from .models import Animation, PostStyle, RigType, RigSpec, Task, Balance, TaskStatus, TaskOutput
-from .exceptions import TripoAPIError, TripoRequestError
+from .models import (
+    Animation,
+    PostStyle,
+    RigType,
+    RigSpec,
+    Task,
+    Balance,
+    TaskStatus,
+    TaskOutput,
+    BatchTaskResult,
+    TaskUsageItem,
+    PresignedUpload,
+)
+from .exceptions import (
+    TripoError,
+    TripoAPIError,
+    TripoRequestError,
+    TripoValidationError,
+    TripoPollTimeoutError,
+    TripoApiError,
+    TripoNetworkError,
+)
 
 
 def _detect_location_background():
@@ -30,7 +51,6 @@ def _detect_location_background():
 _detection_thread = threading.Thread(target=_detect_location_background, daemon=True)
 _detection_thread.start()
 
-__version__ = "0.4.2"
 __all__ = [
     "TripoClient",
     "Animation",
@@ -41,6 +61,15 @@ __all__ = [
     "Balance",
     "TaskStatus",
     "TaskOutput",
+    "BatchTaskResult",
+    "TaskUsageItem",
+    "PresignedUpload",
+    "TripoError",
     "TripoAPIError",
-    "TripoRequestError"
+    "TripoRequestError",
+    "TripoValidationError",
+    "TripoPollTimeoutError",
+    "TripoApiError",
+    "TripoNetworkError",
+    "__version__",
 ]
