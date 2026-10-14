@@ -184,7 +184,7 @@ The front view is required; missing views are `None`. `v1.4-20240625` is not ava
 ### text_to_image / image_to_image / generate_image
 
 ```python
-task_id = await client.text_to_image("a red panda", model="seedream_v4", size="1024x1024")
+task_id = await client.text_to_image("a red panda")
 task_id = await client.image_to_image("./ref.png", prompt="make it blue", model="seedream_v5",
                                       inputs=["./ref2.png"])
 task_id = await client.generate_image(prompt="...", model_version=None, file="./ref.png",
@@ -275,12 +275,22 @@ apiv3 reports the detected skeleton as `topology`; the SDK exposes it as `rig_ty
 task_id = await client.rig_model(original_model_task_id, model_version="v1.0-20240301",
                                  out_format="glb", rig_type=RigType.BIPED, spec=RigSpec.TRIPO)
 task_id = await client.rig(original_model_task_id, model="v3.0-20260909",
-                           rig_type="others", spec="vrm", no_weights_list=["hair"])
+                           rig_type="others", spec="vrm")
 ```
 
 `model_version` / `model`: `v1.0-20240301` (default), `v2.5-20260210`, `v3.0-20260909`.
 The retired `v2.0-20250506` is sent as `v2.5-20260210` (with a warning), which is what the v2
-API did. `spec`: `tripo`, `mixamo`, `actorcore`, `unity`, `unreal`, `vrm`.
+API did. `spec`: `tripo`, `mixamo`, `actorcore` work with every version; `unity`, `unreal`, `vrm`
+need `v2.5-20260210` or `v3.0-20260909` (with `v1.0-20240301` the task fails).
+
+Rig / retarget compatibility measured on the API (2026-10-15); other combinations fail:
+
+| Rig version | Skeleton types it can rig | Humanoid presets | serpentine / aquatic presets | quadruped / hexapod / octopod presets |
+| --- | --- | --- | --- | --- |
+| `v3.0-20260909` | all | ✓ | ✓ | ✗ |
+| `v2.5-20260210` (and `v2.0-20250506`) | all | ✗ | ✓ | ✓ |
+| `v1.0-20240301` | biped only | ✓ | — | — |
+
 
 ### retarget / retarget_animation
 
@@ -291,6 +301,7 @@ task_id = await client.retarget(rig_task_id, animations=["preset:walk", "preset:
 ```
 
 At most 5 animations per task. `bake_animation` is accepted but ignored (apiv3 no longer uses it).
+The preset must suit the rig version, see the table under `rig`.
 
 ## Mesh
 

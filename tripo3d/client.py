@@ -870,7 +870,8 @@ class TripoClient:
         """Rig a model (``POST /v3/animations/rig``).
 
         ``model``: ``v1.0-20240301`` (server default), ``v2.5-20260210`` or ``v3.0-20260909``.
-        Extra keyword arguments (e.g. ``no_weights_list``) are sent as-is.
+        ``spec`` ``unity`` / ``unreal`` / ``vrm`` need ``v2.5-20260210`` or ``v3.0-20260909``.
+        Extra keyword arguments are sent as-is.
         """
         payload: Dict[str, Any] = {"input": input}
         if model is not None:
@@ -918,7 +919,7 @@ class TripoClient:
         """Apply preset animations to a rigged model (``POST /v3/animations/retarget``).
 
         Pass ``animation`` or up to 5 ``animations``. Extra keyword arguments
-        (``export_with_geometry``, ``animate_in_place``, ``render_video`` ...) are sent as-is.
+        (``export_with_geometry``, ``animate_in_place``) are sent as-is.
         """
         payload: Dict[str, Any] = {"input": input}
         if animation is not None:
